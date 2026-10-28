@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light">
+  <title>个人智能助理</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23272a30'/%3E%3Cpath d='M8 18V8h10M14 24h10V14M8 24 24 8' fill='none' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/css/app.css?v=7">
+</head>
+<body>
+  <svg class="icon-definitions" aria-hidden="true"><defs>
+    <symbol id="i-mark" viewBox="0 0 24 24"><path d="M4 14V4h10M10 20h10V10M4 20 20 4"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-chat" viewBox="0 0 24 24"><path d="M6 19 3 21V6a3 3 0 0 1 3-3h12a3 3 0 0 1 3 3v10a3 3 0 0 1-3 3H6Z"/><path d="M8 8h8M8 12h5"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5m-6 6 6-6 6 6"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-pen" viewBox="0 0 24 24"><path d="m15 4 5 5M4 20l5-1L20 8a3.5 3.5 0 0 0-5-5L4 14l-1 7 6-2"/></symbol>
+    <symbol id="i-idea" viewBox="0 0 24 24"><path d="M8 16c0-2-3-3-3-7a7 7 0 0 1 14 0c0 4-3 5-3 7M8 17h8M9 21h6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  </defs></svg>
+
+  <div class="app" id="app">
+    <button class="mobile-shade" id="shade" aria-label="关闭侧边栏" tabindex="-1"></button>
+    <aside class="sidebar" aria-label="对话导航">
+      <div class="brand">
+        <span class="brand-symbol"><svg aria-hidden="true"><use href="#i-mark"/></svg></span>
+        <span class="brand-name">个人智能助理</span>
+      </div>
+      <button class="new-chat" id="new-chat">
+        <svg aria-hidden="true"><use href="#i-plus"/></svg>
+        <span>新建对话</span>
+      </button>
+      <section class="recent" aria-label="对话记录">
+        <div class="section-label">对话记录</div>
+        <div class="history" id="history"></div>
+      </section>
+      <footer class="sidebar-footer">
+        <button class="clear-history" id="clear-history">
+          <svg aria-hidden="true"><use href="#i-trash"/></svg>
+          <span>清空对话</span>
+        </button>
+        <p class="storage-note" id="storage-note">记录保存在此浏览器</p>
+      </footer>
+    </aside>
+
+    <main class="workspace">
+      <button class="menu-toggle" id="menu-toggle" aria-label="打开导航" aria-expanded="false">
+        <svg aria-hidden="true"><use href="#i-menu"/></svg>
+      </button>
+
+      <section class="chat-view" id="chat-view" aria-label="个人智能助理聊天">
+        <div class="chat-scroll" id="chat-scroll">
+          <div class="welcome" id="welcome">
+            <h1>有什么可以帮你？</h1>
+            <p>整理思路、撰写内容，或直接开始提问。</p>
+            <div class="ideas" aria-label="开场建议">
+              <button class="idea" data-prompt="帮我把今天的工作按优先级整理成计划。">
+                <svg aria-hidden="true"><use href="#i-list"/></svg><span>制定计划</span>
+              </button>
+              <button class="idea" data-prompt="我有一段文字需要润色，帮我调整得更简洁、清晰。">
+                <svg aria-hidden="true"><use href="#i-pen"/></svg><span>润色文字</span>
+              </button>
+              <button class="idea" data-prompt="帮我梳理一个想法，我们从目标、限制条件和下一步开始。">
+                <svg aria-hidden="true"><use href="#i-idea"/></svg><span>梳理思路</span>
+              </button>
+            </div>
+          </div>
+          <div class="messages" id="messages" role="log" aria-label="对话记录" aria-live="polite" aria-relevant="additions" hidden></div>
+        </div>
+
+        <div class="composer-area">
+          <div class="composer-wrap">
+            <p class="connection-note" id="connection-note" role="status" hidden></p>
+            <form class="composer" id="composer">
+              <label for="message-input" class="sr-only">输入消息</label>
+              <textarea id="message-input" rows="2" maxlength="8000" placeholder="输入消息…"></textarea>
+              <div class="composer-footer">
+                <span class="input-note" id="input-note">Enter 发送 · Shift + Enter 换行</span>
+                <button class="send" id="send" type="submit" aria-label="发送消息" title="发送消息" disabled>
+                  <svg aria-hidden="true"><use href="#i-send"/></svg>
+                </button>
+              </div>
+            </form>
+            <p class="disclaimer">回答由 AI 生成，请核实重要信息。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script type="module" src="/static/js/app.js?v=7"></script>
+</body>
+</html>

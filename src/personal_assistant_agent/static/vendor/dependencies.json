@@ -1,0 +1,18 @@
+[
+  {
+    "package": "marked",
+    "version": "18.1.2",
+    "license": "MIT",
+    "registry": "https://registry.npmjs.org/marked/18.1.2",
+    "tarball_integrity": "sha512-DfOnvLAQ6WYeWxWO1u4RyFOeqyHup6dks5PPqnoFiooU7ipRvidO/2j8plhAHIiZg574E9ZlzSjUiPMLAzFkgg==",
+    "file": "marked.esm.js"
+  },
+  {
+    "package": "dompurify",
+    "version": "3.4.17",
+    "license": "(MPL-2.0 OR Apache-2.0)",
+    "registry": "https://registry.npmjs.org/dompurify/3.4.17",
+    "tarball_integrity": "sha512-B/pSlYVHQ58kqISD/yDjuJ1yfzI34m1gF4lAod2bwSRhiN4K5Cl3H8Af7hqB2PmTL911tdEudnnXn5FnhRoz0w==",
+    "file": "purify.es.mjs"
+  }
+]

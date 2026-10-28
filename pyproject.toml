@@ -1,0 +1,40 @@
+[project]
+name = "personal-assistant-agent"
+version = "0.1.0"
+description = "基于 Python、Deep Agents、Qwen 和 LangSmith 的个人智能助理 / Personal AI assistant built with Python, Deep Agents, Qwen and LangSmith"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "deepagents>=0.7.32,<0.8",
+    "langchain-openai>=1.7,<2",
+    "langchain-core>=1.7,<2",
+    "langgraph>=1.2,<2",
+    "langsmith>=0.14.14,<0.15",
+    "fastapi>=0.162,<1",
+    "uvicorn>=0.54,<1",
+    "python-dotenv>=1.2,<2",
+    "pydantic>=2.12,<3",
+    "openai>=3.40,<4",
+    "truststore>=0.10,<1",
+    "httpx>=0.28,<1",
+]
+
+[project.scripts]
+personal-assistant-agent = "personal_assistant_agent.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

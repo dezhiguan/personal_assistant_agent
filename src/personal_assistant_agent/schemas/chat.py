@@ -1,0 +1,35 @@
+"""Bounded conversation input; clients cannot supply system or tool messages."""
+
+from typing import Literal, Self
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+class ChatMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("content")
+    @classmethod
+    def reject_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("消息不能为空")
+        return value
+
+
+class ChatRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    conversation_id: UUID
+    messages: list[ChatMessage] = Field(min_length=1, max_length=60)
+
+    @model_validator(mode="after")
+    def validate_conversation(self) -> Self:
+        if self.messages[-1].role != "user":
+            raise ValueError("最后一条消息必须是用户消息")
+        if sum(len(m.content) for m in self.messages) > 80000:
+            raise ValueError("对话过长，请开启新对话")
+        return self
