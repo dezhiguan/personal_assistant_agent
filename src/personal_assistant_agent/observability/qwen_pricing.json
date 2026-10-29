@@ -1,0 +1,37 @@
+{
+  "model": "qwen-plus",
+  "base_url_host": "dashscope.aliyuncs.com",
+  "region": "cn-beijing",
+  "thinking": false,
+  "currency": "CNY",
+  "verified_on": "2026-10-28",
+  "source": "https://help.aliyun.com/zh/model-studio/qwen-plus",
+  "description": "Public list-price estimate; excludes discounts, free quotas and actual invoice adjustments.",
+  "tiers": [
+    {
+      "max_input_tokens": 128000,
+      "input_per_million": "0.8",
+      "cache_read_per_million": "0.16",
+      "output_per_million": "2"
+    },
+    {
+      "max_input_tokens": 256000,
+      "input_per_million": "2.4",
+      "cache_read_per_million": "0.48",
+      "output_per_million": "20"
+    },
+    {
+      "max_input_tokens": 1000000,
+      "input_per_million": "4.8",
+      "cache_read_per_million": "0.96",
+      "output_per_million": "48"
+    }
+  ],
+  "fx": {
+    "source": "https://data-api.ecb.europa.eu/service/data/EXR/D.USD+CNY.EUR.SP00.A",
+    "date": "2026-10-27",
+    "CNY_per_EUR": "7.4343",
+    "USD_per_EUR": "1.115",
+    "CNY_per_USD": "6.667533632286995515695067265"
+  }
+}

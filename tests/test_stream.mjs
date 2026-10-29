@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parseEvents } from '../src/personal_assistant_agent/static/js/api.js';
+import { parseEvents, streamChat } from '../src/personal_assistant_agent/static/js/api.js';
 import { latestTodos, normalizeTodos } from '../src/personal_assistant_agent/static/js/planning.js';
 
 test('NDJSON parser handles Chinese split across byte boundaries and incomplete lines', async () => {
@@ -20,6 +20,15 @@ test('NDJSON parser rejects malformed stream instead of showing it as a model an
     controller.close();
   } });
   await assert.rejects(async () => { for await (const event of parseEvents(stream)) void event; });
+});
+
+test('old server rejecting todos prompts a restart instead of blaming message format', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    detail: [{ type: 'extra_forbidden', loc: ['body', 'todos'], input: [] }],
+  }), { status: 422 }));
+  await assert.rejects(async () => {
+    for await (const event of streamChat({ messages: [], todos: [] })) void event;
+  }, /旧版聊天接口.*重启 Python 服务/);
 });
 
 test('plan events preserve revisions and clearing across byte boundaries', async () => {

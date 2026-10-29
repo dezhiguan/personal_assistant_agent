@@ -18,13 +18,18 @@ dependencies = [
     "truststore>=0.10,<1",
     "httpx>=0.28,<1",
     "langchain>=1.4,<2",
+    "starlette>=1.10,<2",
 ]
 
 [project.scripts]
 personal-assistant-agent = "personal_assistant_agent.cli:main"
 
 [dependency-groups]
-dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+dev = [
+    "langgraph-cli[inmem]>=0.4.40",
+    "pytest>=8,<10",
+    "ruff>=0.11,<1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

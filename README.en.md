@@ -11,7 +11,10 @@ A standalone personal assistant built with **Python, Deep Agents, Qwen, and Lang
 - Multiple conversations with history restored from browser local storage.
 - A Python / FastAPI backend serving the interface and API together.
 - Direct Qwen integration with optional LangSmith tracing.
+- Private versioned prompts, synthetic datasets, rule-based evaluation and a Qwen quality judge.
+- Measured token/cache usage and estimated costs reconciled against native LangSmith fields.
 - Command-line startup and a Dockerfile for deployment.
+- LangGraph Agent Server configuration; cloud hosting still requires an eligible paid account.
 
 ## Quick start
 
@@ -72,6 +75,18 @@ The script reuses or creates an external Agent record named `personal-assistant-
 
 Each chat request has a unique request ID. Trace metadata includes `request_id`, `conversation_id`, and `session_id`. When tracing is enabled, model inputs and outputs are sent to your LangSmith workspace. Set `LANGSMITH_TRACING=false` to continue chatting without tracing.
 
+Publish a private system prompt, register the pricing snapshot and run a real dataset experiment:
+
+```bash
+uv run python scripts/sync_prompt.py
+uv run python scripts/sync_pricing.py
+uv run python scripts/evaluate_agent.py --judge
+```
+
+Restart the service after changing the pinned `LANGSMITH_PROMPT_REF`. With the service running, `uv run python scripts/verify_usage.py --planning` compares actual provider usage, model spans and root trace totals. Costs use versioned list prices and an FX snapshot; they are estimates, not invoices. Rule checks must all pass and each optional judge score must be at least 0.8.
+
+See [LangSmith integration and verification](docs/langsmith-capabilities.md) for commands, artifacts and deployment constraints. GitHub Actions workflows ship with the code: standard tests run automatically; live evaluation requires repository secrets and explicitly skips automatic runs when they are missing. Cloud deployment is blocked by the current account's Plus upgrade requirement; no paid resources were provisioned. `langgraph.json` includes the graph and existing web app with platform authentication on custom routes.
+
 Keep API keys on the server. Git and Docker builds exclude `.env`; never put keys in HTML, JavaScript, command arguments, or documentation. Keep the local configuration file at permission mode `0600`.
 
 ## Conversation behavior and limits
@@ -99,7 +114,7 @@ Plans are saved with assistant messages in browser storage. Follow-up requests r
 | --- | --- |
 | `GET /` | Chat interface |
 | `GET /healthz` | Configuration status without credentials |
-| `POST /api/chat` | NDJSON stream with `meta`, `plan`, `delta`, `done`, and `error` events |
+| `POST /api/chat` | NDJSON stream with `meta`, `plan`, `delta`, `usage`, `done`, and `error` events |
 | `GET /docs` | Interactive OpenAPI documentation |
 
 Example request body:
@@ -147,12 +162,12 @@ personal_assistant_agent/
 
 ## Validation
 
-Automated tests do not call a paid model. Model transport doubles are confined to tests and are absent from application runtime code.
+Unit tests do not call a paid model. Model transport doubles are confined to tests and are absent from application runtime code. Dataset experiments and live-service verification scripts make billable Qwen calls.
 
 ```bash
 uv run ruff check .
 uv run pytest -q
-node --test tests/test_stream.mjs
+node --test tests/*.mjs
 ```
 
 After configuring Qwen and starting the server, run:

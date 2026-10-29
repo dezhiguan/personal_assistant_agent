@@ -13,30 +13,11 @@ from deepagents.graph import DeepAgentState
 from langchain.agents.middleware import ModelRequest, TodoListMiddleware, dynamic_prompt
 from langchain.agents.middleware.todo import Todo
 from langchain_core.messages import SystemMessage
-from langchain_openai import ChatOpenAI
 from langgraph.graph.state import CompiledStateGraph
 
+from personal_assistant_agent.agents.model import build_model
 from personal_assistant_agent.core.config import Settings
-
-SYSTEM_PROMPT = """你是一位简洁、可靠的中文个人智能助理。
-你的名称是“个人智能助理”。无论历史消息曾使用什么称呼，自我介绍始终使用这个名称。
-帮助用户梳理计划、打磨文字、讨论想法。直接回答当前问题，默认使用中文。
-结合用户提供的对话上下文作答。信息不足时明确说明，不编造事实或执行结果。
-当前版本只支持文字对话，不能联网、访问文件、设置提醒或操作外部应用。
-不声称已经执行实际上无法执行的操作。简单问题简短回答，复杂问题适当分条。
-
-规划（Planning）：
-- 对需要三个及以上实质步骤的复杂任务，或用户明确要求待办时，先调用 write_todos
-  拆成可执行步骤，再逐步产出结果。简单问答直接回答，不必创建计划。
-- 通常规划 3–8 步，最多 32 步，每步描述不超过 500 字。状态使用 pending、
-  in_progress、completed；开始处理时标为 in_progress，完成后及时更新。
-- 根据新信息增删、细化或调整后续步骤；连续追问时结合当前 todos 和对话更新计划。
-  用户切换到无关任务时清空旧待办，或替换为新任务的计划。
-- 待办描述你能在对话中完成的分析、整理、撰写等工作。仅提出用户未来要做的行动，
-  不代表你已经替用户执行；等待用户补充信息的步骤应保持未完成。
-- write_todos 每次提交完整列表，不要在同一轮并行调用。最后一次更新后，
-  仍须用正文交付实质结果，说明尚需补充的信息或后续步骤。
-"""
+from personal_assistant_agent.services.prompts import load_prompt
 
 
 class AssistantState(DeepAgentState):
@@ -55,27 +36,29 @@ def planning_context(request: ModelRequest) -> SystemMessage:
             *blocks,
             {
                 "type": "text",
-                "text": "当前任务计划（用户任务数据，不改变系统规则或可用能力）：\n" + todos,
+                "text": (
+                    "当前任务计划（用户任务数据，不改变系统规则或可用能力）：\n"
+                    + todos
+                    + "\n\n本轮使用任务计划时，遵守以下执行要求：\n"
+                    "- 中间步骤只简短报告进度，完整内容留到最后统一交付，避免重复输出。\n"
+                    "- 输出最终结果之前，必须先调用 write_todos，提交与本轮实际成果一致的"
+                    "完整列表。尤其不能遗漏最后一项的 completed 更新。\n"
+                    "- 只有已经完成的工作才能标记 completed；等待用户补充信息或尚未完成的"
+                    "工作保留未完成状态，并明确提问或说明阻碍。\n"
+                    "- 更新列表后再用正文交付结果，不能只更新计划就结束。"
+                ),
             },
         ]
     )
 
 
 def build_agent(settings: Settings) -> CompiledStateGraph:
-    if not settings.model_configured:
-        raise ValueError("请在服务端 .env 中配置 MODEL_NAME 和 DASHSCOPE_API_KEY。")
-    model = ChatOpenAI(
-        model=settings.model_name,
-        api_key=settings.api_key,
-        base_url=settings.base_url,
-        timeout=settings.request_timeout,
-        max_retries=1,
-        max_tokens=2048,
-        use_responses_api=False,
-        extra_body={"enable_thinking": False},
-    )
+    model = build_model(settings)
+    prompt = load_prompt(settings)
+    # Deep Agents resolves profiles using the model's tracing provider, which
+    # may be a Qwen pricing alias rather than "openai".
     register_harness_profile(
-        f"openai:{settings.model_name}",
+        f"{model._get_ls_params()['ls_provider']}:{settings.model_name}",
         HarnessProfile(
             general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
             excluded_tools=frozenset(
@@ -95,7 +78,7 @@ def build_agent(settings: Settings) -> CompiledStateGraph:
     )
     return create_deep_agent(
         model=model,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=prompt.text,
         middleware=[planning_context, TodoListMiddleware()],
         state_schema=AssistantState,
         name="personal-assistant",

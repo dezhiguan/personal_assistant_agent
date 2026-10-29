@@ -6,12 +6,14 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
-from langchain_core.tracers.langchain import LangChainTracer
+from langchain_core.messages.ai import add_usage
 from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
 from pydantic import TypeAdapter
 
 from personal_assistant_agent.core.config import Settings
+from personal_assistant_agent.observability.costs import estimate_calls
+from personal_assistant_agent.observability.tracer import CostTracer
 from personal_assistant_agent.schemas.chat import ChatRequest, TodoList
 
 logger = logging.getLogger(__name__)
@@ -44,8 +46,10 @@ class ChatService:
     async def stream(self, payload: ChatRequest, request_id: str) -> AsyncIterator[dict]:
         callbacks = (
             [
-                LangChainTracer(
-                    client=self.trace_client, project_name=self.settings.langsmith_project
+                CostTracer(
+                    settings=self.settings,
+                    client=self.trace_client,
+                    project_name=self.settings.langsmith_project,
                 )
             ]
             if self.trace_client
@@ -60,6 +64,7 @@ class ChatService:
                 "conversation_id": str(payload.conversation_id),
                 "session_id": str(payload.conversation_id),
                 "request_id": request_id,
+                "prompt_ref": self.settings.prompt_ref or "local",
             },
             "tags": ["personal-assistant", "mvp", "qwen"],
         }
@@ -70,10 +75,14 @@ class ChatService:
             "tracing_enabled": self.settings.tracing_configured,
         }
         received_text = False
+        usage = None
+        call_usage: dict[str, dict] = {}
         todos = [item.model_dump() for item in payload.todos]
         try:
             with tracing_context(enabled=self.settings.tracing_configured):
-                async with asyncio.timeout(self.settings.request_timeout + 10):
+                # A workflow makes several model calls; each call already has
+                # its own request_timeout enforced by the model transport.
+                async with asyncio.timeout(max(300, self.settings.request_timeout + 10)):
                     async for mode, data in self.agent.astream(
                         {
                             "messages": [m.model_dump() for m in payload.messages],
@@ -99,6 +108,12 @@ class ChatService:
                         chunk, metadata = data
                         if metadata.get("langgraph_node") != "model":
                             continue
+                        if chunk_usage := getattr(chunk, "usage_metadata", None):
+                            usage = add_usage(usage, chunk_usage)
+                            call_id = getattr(chunk, "id", None) or str(
+                                metadata.get("langgraph_step", "model")
+                            )
+                            call_usage[call_id] = add_usage(call_usage.get(call_id), chunk_usage)
                         content = chunk.content
                         text = (
                             content
@@ -114,6 +129,12 @@ class ChatService:
                             yield {"type": "delta", "text": text}
             if not received_text:
                 raise RuntimeError("Model completed without text")
+            if usage:
+                yield {
+                    "type": "usage",
+                    **usage,
+                    "cost_estimate": estimate_calls(call_usage.values(), self.settings),
+                }
             yield {"type": "done", "request_id": request_id}
         except asyncio.CancelledError:
             logger.info("Chat cancelled request_id=%s", request_id)

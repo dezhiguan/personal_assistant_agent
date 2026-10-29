@@ -17,6 +17,7 @@ class Settings:
     langsmith_api_key: str = field(default="", repr=False)
     langsmith_project: str = "personal-assistant-agent"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
+    prompt_ref: str = ""
 
     @property
     def model_configured(self) -> bool:
@@ -40,4 +41,5 @@ def get_settings() -> Settings:
         langsmith_api_key=os.getenv("LANGSMITH_API_KEY", ""),
         langsmith_project=os.getenv("LANGSMITH_PROJECT", "personal-assistant-agent"),
         langsmith_endpoint=os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
+        prompt_ref=os.getenv("LANGSMITH_PROMPT_REF", "").strip(),
     )

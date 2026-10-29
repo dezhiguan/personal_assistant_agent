@@ -2,7 +2,7 @@
 
 **简体中文** | [English](README.en.md)
 
-基于 **Python + Deep Agents + Qwen + LangSmith** 的独立个人智能助理。单页 HTML 界面，FastAPI 提供同源服务，直接调用阿里云百炼；会话记录保存在当前浏览器，LangSmith 用于追踪调用。
+基于 **Python + Deep Agents + Qwen + LangSmith** 的独立个人智能助理。单页 HTML 界面，FastAPI 提供同源服务，直接调用阿里云百炼；会话记录保存在当前浏览器，LangSmith 提供调用追踪、提示词版本管理和回归评测。
 
 ## 功能
 
@@ -11,7 +11,10 @@
 - 多会话管理，使用浏览器本地存储恢复历史记录。
 - Python / FastAPI 同源提供聊天页面和接口。
 - 直接调用 Qwen，按需启用 LangSmith 调用追踪。
+- 私有托管提示词、合成评测数据集、规则与模型自动评分。
+- Qwen Token、缓存命中和费用估算，可与 LangSmith 原生字段对账。
 - 支持命令行启动和 Docker 部署。
+- 提供 LangGraph Agent Server 部署入口；云托管仍需开通账户套餐。
 
 ## 快速开始
 
@@ -33,6 +36,8 @@ uv run personal-assistant-agent
 ```
 
 打开 <http://127.0.0.1:8000>。开发时可使用 `uv run personal-assistant-agent --reload`；修改端口使用 `--port 8001`。模型与追踪配置修改后需重启服务。
+
+修改 Python Agent 或聊天接口后也需要重启服务；仅刷新浏览器只会更新前端资源，不会重新加载后端。开发时使用 `--reload` 可自动加载 Python 代码改动。
 
 ## 模型配置
 
@@ -68,6 +73,21 @@ uv run python scripts/setup_langsmith.py
 
 每次聊天有独立请求编号，追踪 metadata 带 `request_id`、`conversation_id` 和 `session_id`，方便排查。开启追踪后，调用输入与输出会发送到你自己的 LangSmith；设为 `false` 可关闭追踪而继续聊天。
 
+配置好密钥后，可发布系统提示词并注册 Qwen 费用估算：
+
+```bash
+uv run python scripts/sync_prompt.py
+uv run python scripts/sync_pricing.py
+# 使用真实 Qwen 运行数据集、规则评分和模型质量评分：
+uv run python scripts/evaluate_agent.py --judge
+```
+
+服务使用 `.env` 中固定到提交哈希的 `LANGSMITH_PROMPT_REF`，更新后需重启。启动服务后执行 `uv run python scripts/verify_usage.py --planning`，核对真实 Token 与 LangSmith 汇总费用。金额为版本化标价估算，不是百炼账单。
+
+完整配置、报告位置、工作流启用条件与部署限制见 [LangSmith 接入与验收](docs/langsmith-capabilities.md)。GitHub Actions 随代码发布：常规测试自动执行；真实评测需要仓库 Secrets，缺少时自动触发的评测会明确跳过。LangSmith 云托管受账号 Plus 套餐限制，尚未开通付费资源。
+
+前端排版使用本地打包的 Marked 与 DOMPurify，依赖版本、完整性校验和许可保存在 `static/vendor/`，浏览器运行时不依赖外部 CDN。
+
 密钥仅存于服务端，`.env` 被 Git 和 Docker 构建排除；请勿放到 HTML、JavaScript、命令参数或文档中。本机配置文件应保持 0600 权限。
 
 ## 已实现的流程
@@ -77,6 +97,7 @@ uv run python scripts/setup_langsmith.py
 - 新建与切换对话互不混用；刷新后恢复本机记录。
 - 生成时可停止，浏览器中止请求并取消服务端生成任务。
 - 错误明确提示，可重新生成，不重复追加用户消息。
+- 回复按富文本排版，支持标题、加粗、列表、代码块和表格；历史与流式回复使用同一套渲染。
 - 复制回答、清空本机记录，适配手机和桌面。
 
 MVP 使用单个文字助理，启用规划工具，不启用文件、Shell、联网和子助理工具。每次运行不使用共享 checkpointer；后端不保存跨会话历史。单条消息最多 8000 字符，一次最多 60 条、总计 80000 字符，超限会提示新建对话。超长对话不会静默截断。
@@ -89,13 +110,15 @@ MVP 使用单个文字助理，启用规划工具，不启用文件、Shell、�
 
 计划随每条助理回复保存在当前浏览器；后续请求携带当前会话最新有效的 `todos`，无需共享服务端状态。重试从当前回复之前的计划重新开始，新会话从空计划开始。每份计划最多 32 步，每步最多 500 字。规划跟踪的是助理在对话中完成的分析、整理和撰写工作；提出外部行动不等于已经执行。
 
+`MODEL_TIMEOUT_SECONDS` 控制单次模型调用的超时；多步工作流包含多次调用，整体至少允许 300 秒。停止生成仍会立即取消当前请求。缺少必要信息时，助理可能继续提问；补充条件后再继续执行。
+
 ## API
 
 | 路径 | 用途 |
 | --- | --- |
 | `GET /` | 聊天页面 |
 | `GET /healthz` | 不含密钥的配置状态 |
-| `POST /api/chat` | NDJSON 流式聊天，事件为 `meta`、`plan`、`delta`、`done`、`error` |
+| `POST /api/chat` | NDJSON 流式聊天，事件为 `meta`、`plan`、`delta`、`usage`、`done`、`error` |
 | `GET /docs` | OpenAPI 文档 |
 
 请求示例：
@@ -130,12 +153,19 @@ personal_assistant_agent/
 │   ├── core/config.py          # 服务端配置
 │   ├── schemas/chat.py         # 输入验证
 │   ├── services/chat.py        # 流式执行与 LangSmith
+│   ├── services/prompts.py     # 固定版本的托管提示词读取
+│   ├── prompts/                # 提示词源文件
+│   ├── evaluation/             # 数据集同步与评分器
+│   ├── observability/          # Token / 费用估算与追踪
+│   ├── deployment/             # LangGraph graph / HTTP 部署入口
 │   ├── static/                # 单页 HTML、本地 CSS / JS
 │   ├── app.py                 # 应用组装和生命周期
 │   └── cli.py                 # 命令行入口
 ├── README.md                  # 默认中文说明
 ├── README.en.md               # English documentation
 ├── .env.example
+├── evaluations/                # 合成回归用例
+├── langgraph.json              # LangSmith 部署配置
 ├── Dockerfile
 ├── pyproject.toml
 └── uv.lock
@@ -143,12 +173,12 @@ personal_assistant_agent/
 
 ## 验证
 
-自动化测试不调用付费模型，模型传输替身仅用于测试，不存在于应用运行代码。
+单元测试不调用付费模型，模型传输替身仅用于测试，不存在于应用运行代码。上文的 LangSmith 数据集评测和真实服务验证会产生 Qwen 调用费用。
 
 ```bash
 uv run ruff check .
 uv run pytest -q
-node --test tests/test_stream.mjs
+node --test tests/*.mjs
 ```
 
 启动服务、配置真实 Qwen 后执行：

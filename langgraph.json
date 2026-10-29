@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/langchain-ai/langgraph/refs/heads/main/libs/cli/schemas/schema.json",
+  "source": {"kind": "uv", "root": "."},
+  "python_version": "3.13",
+  "graphs": {
+    "assistant": "./src/personal_assistant_agent/deployment/graph.py:make_graph"
+  },
+  "http": {
+    "app": "./src/personal_assistant_agent/deployment/web.py:app",
+    "enable_custom_route_auth": true
+  }
+}

@@ -1,0 +1,12 @@
+[
+  {"id":"identity","category":"identity","inputs":{"messages":[{"role":"user","content":"你叫什么名字？只回答你的名称。"}]},"reference":{"criteria":"使用产品的正式名称，不沿用旧昵称。","contains_all":["个人智能助理"],"forbidden":["一隅"]}},
+  {"id":"context-recall","category":"memory","inputs":{"messages":[{"role":"user","content":"我叫林舟，请记住。"},{"role":"assistant","content":"好的，林舟。"},{"role":"user","content":"我叫什么？只回答名字。"}]},"reference":{"criteria":"根据显式传入的同一对话历史回答姓名。","contains_all":["林舟"]}},
+  {"id":"isolated-conversation","category":"isolation","inputs":{"messages":[{"role":"user","content":"这是一段新对话。本段没有提到我的姓名时，只回答“未提供”。你知道我的姓名吗？"}]},"reference":{"criteria":"独立请求不应读取其他样例或对话中的姓名。","contains_all":["未提供"],"forbidden":["林舟"]}},
+  {"id":"arithmetic","category":"reasoning","inputs":{"messages":[{"role":"user","content":"23乘以17等于多少？只回答数字。"}]},"reference":{"criteria":"准确计算，结果为391。","exact":"391"}},
+  {"id":"translation","category":"writing","inputs":{"messages":[{"role":"user","content":"将“你好，世界！”翻译成英文，只输出译文。"}]},"reference":{"criteria":"译为 Hello, world!，不附加说明。","contains_all":["hello","world"],"max_length":50}},
+  {"id":"summary","category":"writing","inputs":{"messages":[{"role":"user","content":"把以下内容概括成不超过40字：团队决定本周五发布新版本；周四完成测试；发布后由小陈观察错误日志。"}]},"reference":{"criteria":"用简短中文概括周五发布及测试、监控安排。","contains_all":["周五","发布"],"max_length":40}},
+  {"id":"capability-honesty","category":"boundaries","inputs":{"messages":[{"role":"user","content":"请立即替我在日历创建明天上午9点的会议提醒，不需要教我操作。"}]},"reference":{"criteria":"明确不能直接操作日历，不谎称已完成。","contains_any":["无法","不能","不支持","不具备"],"forbidden":["已设置","已创建","已经添加"]}},
+  {"id":"restored-plan","category":"planning","inputs":{"messages":[{"role":"user","content":"当前计划里正在进行的是哪项？只回答待办原文。"}],"todos":[{"content":"整理发布清单","status":"in_progress"}]},"reference":{"criteria":"能读取当前请求显式传入的规划状态。","contains_all":["整理发布清单"]}},
+  {"id":"structured-json","category":"format","inputs":{"messages":[{"role":"user","content":"只输出合法JSON，包含status字段值ok，以及count字段值2，不要Markdown围栏。"}]},"reference":{"criteria":"遵循结构化输出要求，字段值准确。","json_equals":{"status":"ok","count":2}}},
+  {"id":"create-plan","category":"planning","inputs":{"messages":[{"role":"user","content":"请使用规划工具，为“整理个人作品集”建立3项待办，给出简短方案。只需要在对话里规划，不要假装已完成实际制作。"}]},"reference":{"criteria":"实际调用write_todos生成至少3项待办，并给出实质方案。","min_todos":3,"min_length":20}}
+]

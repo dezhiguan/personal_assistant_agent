@@ -18,3 +18,7 @@ wheels/
 .ruff_cache/
 dist/
 *.egg-info/
+
+# Local reports and Agent Server state
+artifacts/
+.langgraph_api/

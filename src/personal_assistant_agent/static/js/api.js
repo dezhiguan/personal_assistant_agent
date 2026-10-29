@@ -38,6 +38,11 @@ export async function* streamChat(payload, signal) {
   });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
+    if (response.status === 422 && Array.isArray(data.detail)
+      && data.detail.some(error => error.type === 'extra_forbidden'
+        && error.loc?.[0] === 'body' && error.loc?.[1] === 'todos')) {
+      throw new Error('服务仍在使用旧版聊天接口，请重启 Python 服务后刷新页面。');
+    }
     if (response.status === 422) throw new Error('消息格式不正确或对话过长，请开启新对话。');
     throw new Error(typeof data.detail === 'string' ? data.detail : '服务暂时不可用，请稍后重试。');
   }

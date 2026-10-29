@@ -1,5 +1,6 @@
 """Application assembly; routes and agent execution live in separate modules."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -21,9 +22,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        service = (
-            ChatService(build_agent(settings), settings) if settings.model_configured else None
-        )
+        def initialize():
+            import truststore
+
+            truststore.inject_into_ssl()
+            return ChatService(build_agent(settings), settings)
+
+        service = await asyncio.to_thread(initialize) if settings.model_configured else None
         app.state.settings = settings
         app.state.chat_service = service
         yield

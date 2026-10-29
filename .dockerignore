@@ -8,3 +8,8 @@
 .ruff_cache
 docs
 tests
+artifacts
+.langgraph_api
+dist
+build
+.github
