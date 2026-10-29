@@ -1,5 +1,6 @@
 import { getStatus, streamChat } from './api.js';
 import { renderMarkdown } from './markdown.js';
+import { latestTodos, normalizeTodos, renderPlan } from './planning.js';
 
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'yiyu.assistant.v2';
@@ -24,7 +25,7 @@ function loadHistory() {
       .map(s => ({ ...s, messages: s.messages.filter(m => m && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string').map(m => {
         const text = m.role === 'assistant' ? m.text.replaceAll('一隅', '个人智能助理') : m.text;
         renamed ||= text !== m.text;
-        return { ...m, text, state: m.state === 'streaming' ? 'stopped' : m.state };
+        return { ...m, text, ...(Array.isArray(m.todos) ? { todos: normalizeTodos(m.todos) } : {}), state: m.state === 'streaming' ? 'stopped' : m.state };
       }) }));
     currentId = sessions.some(s => s.id === saved.currentId) ? saved.currentId : null;
     if (renamed) persist();
@@ -111,9 +112,13 @@ function renderAssistant(row, message, session) {
   heading.append(icon('mark'), name);
   const body = document.createElement('div');
   body.className = 'assistant-body';
+  const plan = document.createElement('section');
+  plan.className = 'task-plan';
+  plan.setAttribute('aria-label', '任务计划');
+  renderPlan(plan, message);
   if (!message.text && message.state === 'streaming') body.append(thinking());
   else renderMarkdown(body, message.text);
-  row.append(heading, body);
+  row.append(heading, plan, body);
   if (message.state === 'stopped') {
     const state = document.createElement('div');
     state.className = 'message-state';
@@ -232,6 +237,8 @@ function stopGeneration() {
 }
 
 async function runConversation(session, message) {
+  const todos = latestTodos(session.messages, message);
+  message.todos = todos;
   const running = { session, message, controller: new AbortController(), cancelled: false };
   job = running;
   renderMessages();
@@ -245,10 +252,18 @@ async function runConversation(session, message) {
       throw new Error('这段对话较长，请开启新对话后继续。');
     }
     let done = false;
-    for await (const event of streamChat({ conversation_id: session.id, messages }, running.controller.signal)) {
+    for await (const event of streamChat({ conversation_id: session.id, messages, todos }, running.controller.signal)) {
       if (running.cancelled || job !== running) return;
       if (event.type === 'meta') {
         message.requestId = event.request_id;
+      } else if (event.type === 'plan') {
+        const viewport = $('chat-scroll');
+        const nearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
+        message.todos = normalizeTodos(event.todos);
+        const plan = document.querySelector(`[data-message-id="${message.id}"] .task-plan`);
+        if (plan) renderPlan(plan, message);
+        persist();
+        if (nearBottom) scrollBottom();
       } else if (event.type === 'delta') {
         const viewport = $('chat-scroll');
         const nearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
@@ -279,6 +294,7 @@ function retryMessage(session, message) {
   message.error = '';
   message.state = 'streaming';
   message.requestId = null;
+  delete message.todos;
   runConversation(session, message);
 }
 

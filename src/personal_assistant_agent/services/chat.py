@@ -9,11 +9,13 @@ from uuid import UUID
 from langchain_core.tracers.langchain import LangChainTracer
 from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
+from pydantic import TypeAdapter
 
 from personal_assistant_agent.core.config import Settings
-from personal_assistant_agent.schemas.chat import ChatRequest
+from personal_assistant_agent.schemas.chat import ChatRequest, TodoList
 
 logger = logging.getLogger(__name__)
+todo_adapter = TypeAdapter(TodoList)
 
 
 def public_error(error: Exception) -> tuple[str, str]:
@@ -52,7 +54,7 @@ class ChatService:
         config = {
             "run_id": UUID(request_id),
             "run_name": "personal-assistant-chat",
-            "recursion_limit": 12,
+            "recursion_limit": 100,
             "callbacks": callbacks,
             "metadata": {
                 "conversation_id": str(payload.conversation_id),
@@ -68,14 +70,33 @@ class ChatService:
             "tracing_enabled": self.settings.tracing_configured,
         }
         received_text = False
+        todos = [item.model_dump() for item in payload.todos]
         try:
             with tracing_context(enabled=self.settings.tracing_configured):
                 async with asyncio.timeout(self.settings.request_timeout + 10):
-                    async for chunk, metadata in self.agent.astream(
-                        {"messages": [m.model_dump() for m in payload.messages]},
+                    async for mode, data in self.agent.astream(
+                        {
+                            "messages": [m.model_dump() for m in payload.messages],
+                            "todos": todos,
+                        },
                         config=config,
-                        stream_mode="messages",
+                        stream_mode=["messages", "updates"],
                     ):
+                        if mode == "updates":
+                            for update in data.values():
+                                if not isinstance(update, dict) or "todos" not in update:
+                                    continue
+                                updated = [
+                                    item.model_dump()
+                                    for item in todo_adapter.validate_python(update["todos"])
+                                ]
+                                if updated != todos:
+                                    todos = updated
+                                    yield {"type": "plan", "todos": todos}
+                            continue
+                        if mode != "messages":
+                            continue
+                        chunk, metadata = data
                         if metadata.get("langgraph_node") != "model":
                             continue
                         content = chunk.content

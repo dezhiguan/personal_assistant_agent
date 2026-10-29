@@ -10,6 +10,7 @@
 }
 
 * { box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
 body {
   margin: 0;
   color: var(--text);
@@ -44,12 +45,13 @@ svg {
   white-space: nowrap;
   border: 0;
 }
-.app { display: flex; height: 100dvh; min-height: 100vh; }
+.app { position: fixed; inset: 0; display: flex; min-height: 0; overflow: hidden; }
 .sidebar {
   display: flex;
   flex: 0 0 244px;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   padding: 24px 16px 18px;
   background: var(--sidebar);
   border-right: 1px solid var(--line);
@@ -77,10 +79,10 @@ svg {
 .clear-history svg { width: 15px; height: 15px; }
 .clear-history:hover { color: var(--ink); background: #eeeef1; }
 .storage-note { color: #a0a3ab; font-size: 10px; line-height: 1.7; margin: 8px 11px 0; }
-.workspace { position: relative; display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.workspace { position: relative; display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; }
 .menu-toggle, .mobile-shade { display: none; }
 .chat-view { display: flex; flex: 1; min-height: 0; flex-direction: column; }
-.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #dedee3 transparent; }
+.chat-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #dedee3 transparent; }
 .welcome { display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100%; width: calc(100% - 72px); max-width: 800px; margin: 0 auto; padding: 40px 0 72px; text-align: center; }
 .welcome h1 { color: var(--ink); font-size: 30px; font-weight: 500; line-height: 1.5; letter-spacing: .4px; margin: 0 0 13px; }
 .welcome p { color: #999da6; font-size: 13px; line-height: 1.8; margin: 0; }
@@ -111,6 +113,21 @@ textarea::placeholder { color: #a4a7af; }
 .assistant-heading svg { width: 23px; height: 23px; padding: 4px; border-radius: 5px; color: #fff; background: var(--accent); stroke-width: 1.45; }
 .assistant-body { min-width: 0; padding-left: 33px; color: #454a54; font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }
 .assistant-body:empty { display: none; }
+.task-plan { margin: 0 0 18px 33px; padding: 15px 17px; border: 1px solid var(--line); border-radius: 8px; background: #fafafb; }
+.plan-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--ink); font-size: 12px; font-weight: 600; }
+.plan-count { color: #747b86; font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums; }
+.task-plan progress { display: block; width: 100%; height: 3px; margin: 12px 0; border: 0; border-radius: 2px; background: #e7e9ed; color: #617c71; accent-color: #617c71; }
+.task-plan progress::-webkit-progress-bar { background: #e7e9ed; border-radius: 2px; }
+.task-plan progress::-webkit-progress-value { background: #617c71; border-radius: 2px; }
+.task-plan progress::-moz-progress-bar { background: #617c71; border-radius: 2px; }
+.task-plan ol { margin: 0; padding-left: 20px; }
+.task-plan li { padding: 7px 0 7px 3px; font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.task-plan li::marker { color: #9198a3; font-variant-numeric: tabular-nums; }
+.plan-status { display: inline-block; margin-left: 10px; color: #7b828d; font-size: 10px; white-space: nowrap; }
+.task-plan li[data-status="in_progress"] { color: var(--ink); font-weight: 600; }
+.task-plan li[data-status="in_progress"] .plan-status { color: #476d86; }
+.task-plan li[data-status="completed"] { color: #79837d; }
+.task-plan li[data-status="completed"] .plan-status { color: #567465; }
 .assistant-body > :first-child { margin-top: 0; }
 .assistant-body > :last-child { margin-bottom: 0; }
 .assistant-body p { margin: 0 0 13px; }
@@ -190,6 +207,7 @@ textarea::placeholder { color: #a4a7af; }
   .input-note, .disclaimer { font-size: 9px; }
   .messages { width: calc(100% - 36px); padding-top: 28px; }
   .assistant-body { padding-left: 0; }
+  .task-plan { margin-left: 0; padding: 13px; }
   .message-actions { padding-left: 0; }
   .message-state { padding-left: 0; }
   .message-error { margin-left: 0; }

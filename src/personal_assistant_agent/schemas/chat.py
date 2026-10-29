@@ -1,6 +1,6 @@
 """Bounded conversation input; clients cannot supply system or tool messages."""
 
-from typing import Literal, Self
+from typing import Annotated, Literal, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -20,11 +20,22 @@ class ChatMessage(BaseModel):
         return value
 
 
+class TodoItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=500, pattern=r"\S")
+    status: Literal["pending", "in_progress", "completed"]
+
+
+TodoList = Annotated[list[TodoItem], Field(max_length=32)]
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     conversation_id: UUID
     messages: list[ChatMessage] = Field(min_length=1, max_length=60)
+    todos: TodoList = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_conversation(self) -> Self:

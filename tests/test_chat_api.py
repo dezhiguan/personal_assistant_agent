@@ -57,6 +57,31 @@ def test_conversations_do_not_share_history(client, graph):
     assert first["messages"][0]["content"] not in str(graph.calls[1])
 
 
+def test_follow_up_plan_is_restored_and_isolated(client, graph):
+    first = payload("继续上次的计划")
+    first["todos"] = [{"content": "完成初稿", "status": "in_progress"}]
+    assert client.post("/api/chat", json=first).status_code == 200
+    assert graph.calls[0][0]["todos"] == first["todos"]
+    client.post("/api/chat", json=payload("新任务"))
+    assert graph.calls[1][0]["todos"] == []
+
+
+@pytest.mark.parametrize(
+    "todos",
+    [
+        [{"content": "任务", "status": "made_up"}],
+        [{"content": "  ", "status": "pending"}],
+        [{"content": "x" * 501, "status": "pending"}],
+        [{"content": "任务", "status": "pending", "tool": "execute"}],
+        [{"content": "任务", "status": "pending"}] * 33,
+    ],
+)
+def test_rejects_invalid_or_oversized_plans(client, todos):
+    data = payload()
+    data["todos"] = todos
+    assert client.post("/api/chat", json=data).status_code == 422
+
+
 @pytest.mark.parametrize("text", ["", "  ", "a" * 8001])
 def test_invalid_message_content(client, text):
     assert client.post("/api/chat", json=payload(text)).status_code == 422

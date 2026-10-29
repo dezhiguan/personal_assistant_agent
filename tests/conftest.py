@@ -19,8 +19,8 @@ class RecordingGraph:
         self.calls.append((value, config))
         if self.error:
             raise self.error
-        yield SimpleNamespace(content="你好，"), {"langgraph_node": "model"}
-        yield SimpleNamespace(content="这是测试回复。"), {"langgraph_node": "model"}
+        yield "messages", (SimpleNamespace(content="你好，"), {"langgraph_node": "model"})
+        yield "messages", (SimpleNamespace(content="这是测试回复。"), {"langgraph_node": "model"})
 
 
 @pytest.fixture(autouse=True)

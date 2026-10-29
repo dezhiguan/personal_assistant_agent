@@ -7,6 +7,7 @@ A standalone personal assistant built with **Python, Deep Agents, Qwen, and Lang
 ## Features
 
 - Streaming text conversations with follow-up questions, stop, retry, and copy controls.
+- Planning for multi-step tasks, with live todo progress and revisions during follow-ups.
 - Multiple conversations with history restored from browser local storage.
 - A Python / FastAPI backend serving the interface and API together.
 - Direct Qwen integration with optional LangSmith tracing.
@@ -82,7 +83,15 @@ Keep API keys on the server. Git and Docker builds exclude `.env`; never put key
 - Failed responses can be regenerated without adding a duplicate user message.
 - Copy answers or clear local history on desktop and mobile.
 
-This MVP uses one text assistant. File access, shell execution, web access, and subagent tools are disabled. There is no shared checkpointer, and the backend does not persist conversation history between requests. Each message is limited to 8,000 characters; a request can contain at most 60 messages and 80,000 characters in total. Oversized conversations are rejected with a prompt to start a new conversation rather than silently truncated.
+This MVP uses one text assistant with a planning tool. File access, shell execution, web access, and subagent tools are disabled. There is no shared checkpointer, and the backend does not persist conversation history between requests. Each message is limited to 8,000 characters; a request can contain at most 60 messages and 80,000 characters in total. Oversized conversations are rejected with a prompt to start a new conversation rather than silently truncated.
+
+## Planning
+
+Deep Agents supports structured planning through the opt-in `TodoListMiddleware`, which provides `write_todos`. For complex tasks, the assistant creates steps, updates their `pending`, `in_progress`, and `completed` states, and revises the plan as requirements change. The chat interface shows progress; simple questions receive a direct answer.
+
+Try asking the assistant to prepare a project report by planning and completing goal analysis, progress review, risk assessment, and a draft. Follow up with new constraints to revise the remaining steps. Plans track analysis and writing performed in the conversation; proposing an external action does not mean it has been executed.
+
+Plans are saved with assistant messages in browser storage. Follow-up requests restore the latest valid plan from the same conversation. Interrupted plans remain available and display unfinished work as awaiting continuation. Retry starts with the plan preceding the failed response, and new conversations start empty. A plan supports up to 32 steps with at most 500 characters per step.
 
 ## API
 
@@ -90,7 +99,7 @@ This MVP uses one text assistant. File access, shell execution, web access, and 
 | --- | --- |
 | `GET /` | Chat interface |
 | `GET /healthz` | Configuration status without credentials |
-| `POST /api/chat` | NDJSON stream with `meta`, `delta`, `done`, and `error` events |
+| `POST /api/chat` | NDJSON stream with `meta`, `plan`, `delta`, `done`, and `error` events |
 | `GET /docs` | Interactive OpenAPI documentation |
 
 Example request body:
@@ -103,6 +112,14 @@ Example request body:
 ```
 
 For follow-up questions, include the current conversation's user and assistant messages. The last message must be from the user. Clients cannot supply system or tool roles. Missing credentials and invalid input use HTTP error codes; model failures after streaming begins are returned as `error` events without exposing upstream requests or keys.
+
+The optional `todos` request field defaults to `[]`. Each item has `content` and a `status` of `pending`, `in_progress`, or `completed`. Successful tool updates emit complete plan snapshots:
+
+```json
+{"type":"plan","todos":[{"content":"Review goals","status":"in_progress"},{"content":"Draft report","status":"pending"}]}
+```
+
+Replace the previous snapshot on each `plan` event; an empty list clears it. Send the latest snapshot back as `todos` on subsequent requests in the same conversation. Plan events can be interleaved with text deltas; only `done` signals a completed response.
 
 ## Project structure
 

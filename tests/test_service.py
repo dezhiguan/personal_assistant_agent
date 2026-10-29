@@ -44,8 +44,8 @@ def test_cancel_reaches_agent():
 def test_only_main_model_text_is_streamed():
     class Graph:
         async def astream(self, *args, **kwargs):
-            yield SimpleNamespace(content="internal"), {"langgraph_node": "tools"}
-            yield (
+            yield "messages", (SimpleNamespace(content="internal"), {"langgraph_node": "tools"})
+            yield "messages", (
                 SimpleNamespace(
                     content=[
                         {"type": "reasoning", "text": "private reasoning"},
@@ -58,6 +58,43 @@ def test_only_main_model_text_is_streamed():
     async def check():
         output = [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
         assert [e.get("text") for e in output if e["type"] == "delta"] == ["answer"]
+
+    asyncio.run(check())
+
+
+def test_committed_plans_are_streamed_without_tool_arguments_or_duplicate_updates():
+    todos = [{"content": "梳理目标", "status": "in_progress"}]
+
+    class Graph:
+        async def astream(self, value, *, stream_mode, **kwargs):
+            assert stream_mode == ["messages", "updates"]
+            assert value["todos"] == []
+            yield "messages", (
+                SimpleNamespace(content="", tool_call_chunks=[{"args": "internal arguments"}]),
+                {"langgraph_node": "model"},
+            )
+            yield "updates", {"tools": {"todos": todos}}
+            yield "updates", {"model": {"todos": todos}}
+            yield "updates", {"tools": {"todos": []}}
+            yield "messages", (SimpleNamespace(content="结果"), {"langgraph_node": "model"})
+
+    async def check():
+        output = [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
+        assert [e["type"] for e in output] == ["meta", "plan", "plan", "delta", "done"]
+        assert [e["todos"] for e in output if e["type"] == "plan"] == [todos, []]
+        assert "internal arguments" not in str(output)
+
+    asyncio.run(check())
+
+
+def test_plan_only_run_is_not_reported_as_success():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "updates", {"tools": {"todos": [{"content": "整理", "status": "pending"}]}}
+
+    async def check():
+        output = [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
+        assert [e["type"] for e in output] == ["meta", "plan", "error"]
 
     asyncio.run(check())
 
