@@ -16,6 +16,7 @@ def test_local_prompt_retains_identity_and_planning():
     value = load_prompt(Settings())
     assert "个人智能助理" in value.text
     assert "write_todos" in value.text
+    assert "不得用新项替换或删除已完成项" in value.text
     assert value.reference.startswith("local:")
 
 

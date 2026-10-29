@@ -1,11 +1,14 @@
 """Stream Deep Agents output with native LangSmith tracing."""
 
 import asyncio
+import json
 import logging
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.messages.ai import add_usage
 from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
@@ -14,10 +17,45 @@ from pydantic import TypeAdapter
 from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.observability.costs import estimate_calls
 from personal_assistant_agent.observability.tracer import CostTracer
-from personal_assistant_agent.schemas.chat import ChatRequest, TodoList
+from personal_assistant_agent.schemas.chat import ChatRequest, TodoList, ToolProgress
 
 logger = logging.getLogger(__name__)
 todo_adapter = TypeAdapter(TodoList)
+
+
+def _tool_failed(message: ToolMessage) -> bool:
+    if message.status == "error":
+        return True
+    if isinstance(message.content, str):
+        try:
+            payload = json.loads(message.content)
+            return isinstance(payload, dict) and bool(payload.get("error"))
+        except ValueError:
+            pass
+    return False
+
+
+class _ModelUsageCollector(BaseCallbackHandler):
+    """Collect final usage from every model call, including nested task agents.
+
+    Nested agent chunks are intentionally absent from the public message stream.
+    Callback inheritance still provides their measured usage without exposing text.
+    """
+
+    run_inline = True
+
+    def __init__(self):
+        self.calls: dict[str, dict] = {}
+
+    def on_llm_end(self, response, *, run_id, **kwargs):
+        usage = None
+        for generations in response.generations:
+            for generation in generations:
+                metadata = getattr(getattr(generation, "message", None), "usage_metadata", None)
+                if metadata:
+                    usage = add_usage(usage, metadata)
+        if usage:
+            self.calls[str(run_id)] = usage
 
 
 def public_error(error: Exception) -> tuple[str, str]:
@@ -44,6 +82,7 @@ class ChatService:
         )
 
     async def stream(self, payload: ChatRequest, request_id: str) -> AsyncIterator[dict]:
+        usage_collector = _ModelUsageCollector()
         callbacks = (
             [
                 CostTracer(
@@ -59,7 +98,7 @@ class ChatService:
             "run_id": UUID(request_id),
             "run_name": "personal-assistant-chat",
             "recursion_limit": 100,
-            "callbacks": callbacks,
+            "callbacks": [usage_collector, *callbacks],
             "metadata": {
                 "conversation_id": str(payload.conversation_id),
                 "session_id": str(payload.conversation_id),
@@ -78,6 +117,7 @@ class ChatService:
         usage = None
         call_usage: dict[str, dict] = {}
         todos = [item.model_dump() for item in payload.todos]
+        tool_calls: dict[str, str] = {}
         try:
             with tracing_context(enabled=self.settings.tracing_configured):
                 # A workflow makes several model calls; each call already has
@@ -93,7 +133,30 @@ class ChatService:
                     ):
                         if mode == "updates":
                             for update in data.values():
-                                if not isinstance(update, dict) or "todos" not in update:
+                                if not isinstance(update, dict):
+                                    continue
+                                for message in update.get("messages", []):
+                                    if isinstance(message, AIMessage):
+                                        for call in message.tool_calls:
+                                            if call["name"] == "write_todos":
+                                                continue
+                                            tool_calls[call["id"]] = call["name"]
+                                            yield ToolProgress(
+                                                name=call["name"],
+                                                call_id=call["id"],
+                                                status="running",
+                                            ).model_dump()
+                                    elif isinstance(message, ToolMessage):
+                                        name = tool_calls.pop(message.tool_call_id, None)
+                                        if name:
+                                            yield ToolProgress(
+                                                name=name,
+                                                call_id=message.tool_call_id,
+                                                status=(
+                                                    "error" if _tool_failed(message) else "finished"
+                                                ),
+                                            ).model_dump()
+                                if "todos" not in update:
                                     continue
                                 updated = [
                                     item.model_dump()
@@ -129,6 +192,11 @@ class ChatService:
                             yield {"type": "delta", "text": text}
             if not received_text:
                 raise RuntimeError("Model completed without text")
+            if usage_collector.calls:
+                call_usage = usage_collector.calls
+                usage = None
+                for measured in call_usage.values():
+                    usage = add_usage(usage, measured)
             if usage:
                 yield {
                     "type": "usage",

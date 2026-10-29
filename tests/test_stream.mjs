@@ -48,6 +48,23 @@ test('plan events preserve revisions and clearing across byte boundaries', async
   assert.deepEqual(actual, events);
 });
 
+test('tool progress coexists with plan, delta and done events', async () => {
+  const events = [
+    { type: 'plan', todos: [{ content: '创建文件', status: 'in_progress' }] },
+    { type: 'tool', name: 'write_file', call_id: 'create', status: 'running' },
+    { type: 'tool', name: 'write_file', call_id: 'create', status: 'finished' },
+    { type: 'delta', text: '文件已写入。' },
+    { type: 'done' },
+  ];
+  const stream = new ReadableStream({ start(controller) {
+    controller.enqueue(new TextEncoder().encode(events.map(e => JSON.stringify(e)).join('\n')));
+    controller.close();
+  } });
+  const actual = [];
+  for await (const event of parseEvents(stream)) actual.push(event);
+  assert.deepEqual(actual, events);
+});
+
 test('follow-ups restore interrupted plans; retry and empty plans do not revive stale state', () => {
   const todos = [{ content: '整理需求', status: 'in_progress' }];
   const stopped = { role: 'assistant', state: 'stopped', todos };

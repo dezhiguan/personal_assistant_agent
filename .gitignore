@@ -22,3 +22,4 @@ dist/
 # Local reports and Agent Server state
 artifacts/
 .langgraph_api/
+workspace/

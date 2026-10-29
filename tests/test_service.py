@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from uuid import uuid4
 
+from langchain_core.messages import AIMessage, ToolMessage
+
 from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.schemas.chat import ChatRequest
 from personal_assistant_agent.services.chat import ChatService
@@ -45,14 +47,17 @@ def test_only_main_model_text_is_streamed():
     class Graph:
         async def astream(self, *args, **kwargs):
             yield "messages", (SimpleNamespace(content="internal"), {"langgraph_node": "tools"})
-            yield "messages", (
-                SimpleNamespace(
-                    content=[
-                        {"type": "reasoning", "text": "private reasoning"},
-                        {"type": "text", "text": "answer"},
-                    ]
+            yield (
+                "messages",
+                (
+                    SimpleNamespace(
+                        content=[
+                            {"type": "reasoning", "text": "private reasoning"},
+                            {"type": "text", "text": "answer"},
+                        ]
+                    ),
+                    {"langgraph_node": "model"},
                 ),
-                {"langgraph_node": "model"},
             )
 
     async def check():
@@ -69,9 +74,12 @@ def test_committed_plans_are_streamed_without_tool_arguments_or_duplicate_update
         async def astream(self, value, *, stream_mode, **kwargs):
             assert stream_mode == ["messages", "updates"]
             assert value["todos"] == []
-            yield "messages", (
-                SimpleNamespace(content="", tool_call_chunks=[{"args": "internal arguments"}]),
-                {"langgraph_node": "model"},
+            yield (
+                "messages",
+                (
+                    SimpleNamespace(content="", tool_call_chunks=[{"args": "internal arguments"}]),
+                    {"langgraph_node": "model"},
+                ),
             )
             yield "updates", {"tools": {"todos": todos}}
             yield "updates", {"model": {"todos": todos}}
@@ -100,6 +108,114 @@ def test_plan_only_run_is_not_reported_as_success():
 
 
 def test_settings_repr_hides_credentials():
-    value = repr(Settings(api_key="secret-model-key", langsmith_api_key="secret-trace-key"))
+    value = repr(
+        Settings(
+            api_key="secret-model-key",
+            langsmith_api_key="secret-trace-key",
+            baidu_proxy="https://user:secret-proxy-password@proxy.example",
+        )
+    )
     assert "secret-model-key" not in value
     assert "secret-trace-key" not in value
+    assert "secret-proxy-password" not in value
+
+
+def test_tool_progress_does_not_expose_arguments_outputs_or_change_plan_protocol():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield (
+                "updates",
+                {
+                    "model": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "execute",
+                                        "id": "run-command",
+                                        "args": {"command": "private-command"},
+                                    },
+                                    {"name": "write_todos", "id": "plan", "args": {"todos": []}},
+                                ],
+                            )
+                        ]
+                    }
+                },
+            )
+            yield (
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            ToolMessage(
+                                name="execute",
+                                tool_call_id="run-command",
+                                content="private-output",
+                                status="error",
+                            )
+                        ],
+                        "todos": [{"content": "执行任务", "status": "in_progress"}],
+                    }
+                },
+            )
+            yield "messages", (SimpleNamespace(content="执行失败"), {"langgraph_node": "model"})
+
+    async def check():
+        return [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
+
+    events = asyncio.run(check())
+    assert [e["type"] for e in events] == ["meta", "tool", "tool", "plan", "delta", "done"]
+    assert [e["status"] for e in events if e["type"] == "tool"] == ["running", "error"]
+    assert "private-command" not in str(events)
+    assert "private-output" not in str(events)
+
+
+def test_structured_tool_errors_are_reported_as_failure_in_progress():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield (
+                "updates",
+                {
+                    "model": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {
+                                        "name": "baidu_search",
+                                        "id": "search",
+                                        "args": {"query": "test"},
+                                    }
+                                ],
+                            )
+                        ]
+                    }
+                },
+            )
+            yield (
+                "updates",
+                {
+                    "tools": {
+                        "messages": [
+                            ToolMessage(
+                                name="baidu_search",
+                                tool_call_id="search",
+                                status="success",
+                                content='{"source":"baidu","code":"BAIDU_CHALLENGE","error":"验证码"}',
+                            )
+                        ]
+                    }
+                },
+            )
+            yield (
+                "messages",
+                (SimpleNamespace(content="搜索需要验证码"), {"langgraph_node": "model"}),
+            )
+
+    async def check():
+        return [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
+
+    events = asyncio.run(check())
+    assert [e["status"] for e in events if e["type"] == "tool"] == ["running", "error"]
+    assert events[-1]["type"] == "done"

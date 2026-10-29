@@ -12,4 +12,5 @@ artifacts
 .langgraph_api
 dist
 build
+workspace
 .github

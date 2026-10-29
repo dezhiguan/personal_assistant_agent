@@ -30,6 +30,15 @@ class TodoItem(BaseModel):
 TodoList = Annotated[list[TodoItem], Field(max_length=32)]
 
 
+class ToolProgress(BaseModel):
+    """Additive NDJSON event. Contains no arguments, tool output or credentials."""
+
+    type: Literal["tool"] = "tool"
+    name: str
+    call_id: str
+    status: Literal["running", "finished", "error"]
+
+
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

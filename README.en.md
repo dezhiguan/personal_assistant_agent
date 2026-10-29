@@ -8,6 +8,8 @@ A standalone personal assistant built with **Python, Deep Agents, Qwen, and Lang
 
 - Streaming text conversations with follow-up questions, stop, retry, and copy controls.
 - Planning for multi-step tasks, with live todo progress and revisions during follow-ups.
+- Workspace file tools, restricted command execution, and a `task` subagent alongside Planning.
+- Server-side Baidu search, a timezone-aware clock, safe calculations, and tool progress in chat.
 - Multiple conversations with history restored from browser local storage.
 - A Python / FastAPI backend serving the interface and API together.
 - Direct Qwen integration with optional LangSmith tracing.
@@ -98,13 +100,27 @@ Keep API keys on the server. Git and Docker builds exclude `.env`; never put key
 - Failed responses can be regenerated without adding a duplicate user message.
 - Copy answers or clear local history on desktop and mobile.
 
-This MVP uses one text assistant with a planning tool. File access, shell execution, web access, and subagent tools are disabled. There is no shared checkpointer, and the backend does not persist conversation history between requests. Each message is limited to 8,000 characters; a request can contain at most 60 messages and 80,000 characters in total. Oversized conversations are rejected with a prompt to start a new conversation rather than silently truncated.
+The assistant exposes Planning, workspace files, restricted `execute`, `task`, Baidu search, the clock and calculator. There is no shared checkpointer, and the backend does not persist conversation history between requests. Each message is limited to 8,000 characters; a request can contain at most 60 messages and 80,000 characters in total. Oversized conversations are rejected with a prompt to start a new conversation rather than silently truncated.
+
+## Workspace execution and custom tools
+
+Start from the project root. `ASSISTANT_WORKSPACE_DIR=workspace` creates a disk workspace with mode `0700`. Only a non-hidden relative project subdirectory is accepted, with no traversal or symlinked root. Virtual `/notes.txt` maps to `workspace/notes.txt`. Native `ls/read_file/write_file/edit_file/glob/grep/delete/execute/task` coexist with `write_todos`. The general-purpose subagent inherits the same backend, custom tools and execution rules.
+
+`execute` interprets a small command allowlist without starting an OS shell or arbitrary subprocess: `pwd`, `ls [path]`, `cat file...`, `head/tail [-n 1..1000] file`, `wc [-l|-w|-c] file`, `mkdir [-p] path`, `touch file`, `echo text...`. Use file tools to write content. Scripts, interpreters, networking, pipes, redirection, chaining and expansion are rejected. Commands are limited to 4096 characters; reads to 1 MiB per file; output to 16000 characters with a truncation flag. Optional timeout values must be 1–30 seconds; these in-process file operations do not offer a forcibly interruptible process timeout.
+
+This application boundary assumes one local user and a trusted local filesystem. It is not an OS sandbox or multi-tenant isolation. All conversations and subagents share persisted files. Do not store secrets or let untrusted local processes modify this directory concurrently; links and special files are unsupported. Writes/deletions are real and are not rolled back on cancellation, failure or retry. Clearing browser conversations does not remove workspace files. Arbitrary code execution requires a separately isolated backend; setting a local shell's cwd alone does not provide isolation ([official backend guidance](https://reference.langchain.com/python/deepagents/backends/local_shell)).
+
+- `baidu_search(query, max_results=5)` makes server-side HTTPS requests only to Baidu and returns titles, summaries and URLs (possibly Baidu redirect URLs), up to 10 results. It does not fetch result pages. Captchas, errors, empty results and HTML changes are reported without another search engine fallback. No search API key is needed. `BAIDU_TIMEOUT_SECONDS=10` accepts `(0, 60]`; optional `BAIDU_HTTP_PROXY` sets an explicit HTTP(S) proxy, otherwise requests connect directly without system proxies. Redirects are not followed; response size is capped at 2 MiB. Queries go to Baidu/the proxy.
+- `get_current_time(timezone="Asia/Shanghai")` uses the real clock and IANA timezone, returning ISO time, date and Monday–Sunday week boundaries. The prompt requires this tool for today/now/this-week questions.
+- `calculate(expression)` uses a bounded numeric AST interpreter with no `eval`, imports, attribute access or system commands. It supports arithmetic, powers, parentheses, percentages, `pi/e/tau`, and `sqrt/sin/cos/tan/log/log10/log2/exp/floor/ceil/abs/round/min/max`. Trigonometry uses radians; `200*10%=20`, `200+10%=200.1`, and a 10% increase is `200*(1+10%)`. Limits cover expression length, AST nodes/depth, exponents and finite real results; floating-point math is not arbitrary-precision financial arithmetic.
+
+Keys and optional proxy authentication remain server-side in `.env`; never store them in the workspace or tool arguments. File content/tool results enter the Qwen context and may reach LangSmith if tracing is enabled. Workspace files are excluded from Git and Docker build context. Docker pre-creates `/app/workspace` for its non-root user; use a dedicated named volume for persistence, never mount host secrets or home directories. The local system prompt's current capability and execution rules are appended after a pinned hosted prompt, so an old text-only prompt cannot disable the new capabilities. Restart after code/prompt changes; optionally republish with `scripts/sync_prompt.py`.
 
 ## Planning
 
 Deep Agents supports structured planning through the opt-in `TodoListMiddleware`, which provides `write_todos`. For complex tasks, the assistant creates steps, updates their `pending`, `in_progress`, and `completed` states, and revises the plan as requirements change. The chat interface shows progress; simple questions receive a direct answer.
 
-Try asking the assistant to prepare a project report by planning and completing goal analysis, progress review, risk assessment, and a draft. Follow up with new constraints to revise the remaining steps. Plans track analysis and writing performed in the conversation; proposing an external action does not mean it has been executed.
+Try asking the assistant to prepare a project report by planning and completing goal analysis, progress review, risk assessment, and a draft. Follow up with new constraints to revise the remaining steps. Plans track real file operations, commands, searches and analysis; proposing an action or delegating it does not mean it has been completed.
 
 Plans are saved with assistant messages in browser storage. Follow-up requests restore the latest valid plan from the same conversation. Interrupted plans remain available and display unfinished work as awaiting continuation. Retry starts with the plan preceding the failed response, and new conversations start empty. A plan supports up to 32 steps with at most 500 characters per step.
 
@@ -114,7 +130,7 @@ Plans are saved with assistant messages in browser storage. Follow-up requests r
 | --- | --- |
 | `GET /` | Chat interface |
 | `GET /healthz` | Configuration status without credentials |
-| `POST /api/chat` | NDJSON stream with `meta`, `plan`, `delta`, `usage`, `done`, and `error` events |
+| `POST /api/chat` | NDJSON stream with `meta`, `plan`, `tool`, `delta`, `usage`, `done`, and `error` events |
 | `GET /docs` | Interactive OpenAPI documentation |
 
 Example request body:
@@ -135,6 +151,8 @@ The optional `todos` request field defaults to `[]`. Each item has `content` and
 ```
 
 Replace the previous snapshot on each `plan` event; an empty list clears it. Send the latest snapshot back as `todos` on subsequent requests in the same conversation. Plan events can be interleaved with text deltas; only `done` signals a completed response.
+
+An additive `tool` progress event contains `name`, `call_id` and `status` (`running`, `finished`, `error`), without arguments or raw results. `finished` means the tool returned, including possible business errors; the final response must report the actual outcome. Existing clients may ignore these events. Parent-level `task` progress represents delegated work; the main assistant summarizes its verified result.
 
 ## Project structure
 
@@ -177,6 +195,10 @@ uv run python scripts/smoke_test.py
 ```
 
 This command makes real model calls, checks a two-turn conversation and its context, and prints the request ID. If LangSmith tracing is enabled, it also checks the corresponding live trace. A successful live-model verification depends on the command's actual result.
+
+Run `uv run python scripts/verify_tools.py --url http://127.0.0.1:8000` for paid, real-model checks of Planning, plan continuation, file operations, restricted commands, subagents, time, math, boundary rejection and Baidu search. Synthetic fixture files remain under `workspace/live-check-*/`; private reports and events use mode `0600` under `artifacts/live-tools/latest/`. Baidu requests use complete normal browser headers; captcha redirects produce an explicit `BAIDU_CHALLENGE` without following the challenge or fabricating results.
+
+After resolving an external failure, add `--retry-failed` to rerun only failed checks while preserving earlier attempts. Suggested links following a failed search do not count as retrieved results. Structured tool errors appear as failed tool progress. Usage totals include measured calls from both the main agent and nested `task` agents.
 
 ## Deployment
 

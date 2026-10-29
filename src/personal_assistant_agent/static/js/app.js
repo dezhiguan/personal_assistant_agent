@@ -119,6 +119,13 @@ function renderAssistant(row, message, session) {
   if (!message.text && message.state === 'streaming') body.append(thinking());
   else renderMarkdown(body, message.text);
   row.append(heading, plan, body);
+  if (message.toolProgress) {
+    const progress = document.createElement('div');
+    progress.className = 'message-state tool-progress';
+    progress.setAttribute('role', 'status');
+    progress.textContent = message.toolProgress;
+    row.append(progress);
+  }
   if (message.state === 'stopped') {
     const state = document.createElement('div');
     state.className = 'message-state';
@@ -264,6 +271,11 @@ async function runConversation(session, message) {
         if (plan) renderPlan(plan, message);
         persist();
         if (nearBottom) scrollBottom();
+      } else if (event.type === 'tool') {
+        const states = { running: '正在调用', finished: '已返回', error: '调用失败' };
+        message.toolProgress = `${states[event.status] || '调用工具'}：${event.name}`;
+        const row = document.querySelector(`[data-message-id="${message.id}"]`);
+        if (row) renderAssistant(row, message, session);
       } else if (event.type === 'delta') {
         const viewport = $('chat-scroll');
         const nearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
@@ -277,6 +289,7 @@ async function runConversation(session, message) {
       } else if (event.type === 'done') {
         done = true;
         message.state = 'complete';
+        delete message.toolProgress;
       }
     }
     if (!done) throw new Error('回复连接中断，请重新生成。');

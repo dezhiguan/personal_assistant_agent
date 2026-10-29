@@ -18,6 +18,9 @@ class Settings:
     langsmith_project: str = "personal-assistant-agent"
     langsmith_endpoint: str = "https://api.smith.langchain.com"
     prompt_ref: str = ""
+    workspace_dir: str = "workspace"
+    baidu_timeout: float = 10
+    baidu_proxy: str = field(default="", repr=False)
 
     @property
     def model_configured(self) -> bool:
@@ -42,4 +45,7 @@ def get_settings() -> Settings:
         langsmith_project=os.getenv("LANGSMITH_PROJECT", "personal-assistant-agent"),
         langsmith_endpoint=os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
         prompt_ref=os.getenv("LANGSMITH_PROMPT_REF", "").strip(),
+        workspace_dir=os.getenv("ASSISTANT_WORKSPACE_DIR", "workspace").strip(),
+        baidu_timeout=float(os.getenv("BAIDU_TIMEOUT_SECONDS", "10")),
+        baidu_proxy=os.getenv("BAIDU_HTTP_PROXY", "").strip(),
     )
