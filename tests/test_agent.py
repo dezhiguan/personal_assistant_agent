@@ -43,6 +43,7 @@ def test_actual_graph_exposes_planning_execution_and_custom_tools(tmp_path, monk
         "baidu_search",
         "get_current_time",
         "calculate",
+        "validate_time_budget",
     }
     assert all({t["function"]["name"] for t in c["tools"]} == expected for c in calls)
     assert list((tmp_path / "workspace").iterdir()) == []
@@ -316,7 +317,9 @@ def test_restored_todos_are_visible_to_model_without_shared_state():
     with patch("langchain_openai.ChatOpenAI._agenerate", generate):
         asyncio.run(check())
     assert "调整产品发布计划" in prompts[0]
-    assert "调整产品发布计划" not in prompts[1]
+    # A restored plan with no commit receives two bounded correction attempts.
+    assert len(prompts) == 4
+    assert "调整产品发布计划" not in prompts[-1]
 
 
 def test_hosted_prompt_is_followed_by_current_execution_rules(tmp_path, monkeypatch):

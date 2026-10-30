@@ -1,6 +1,7 @@
 """Qwen-powered Deep Agent with planning, workspace execution and server tools."""
 
 import json
+import re
 from typing import NotRequired
 
 from deepagents import (
@@ -10,9 +11,14 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.graph import DeepAgentState
-from langchain.agents.middleware import ModelRequest, TodoListMiddleware, dynamic_prompt
+from langchain.agents.middleware import (
+    ModelRequest,
+    TodoListMiddleware,
+    after_model,
+    dynamic_prompt,
+)
 from langchain.agents.middleware.todo import Todo
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph.state import CompiledStateGraph
 
 from personal_assistant_agent.agents.model import build_model
@@ -26,6 +32,52 @@ class AssistantState(DeepAgentState):
     # TodoListMiddleware omits todos from graph input by default. Allow the
     # validated browser snapshot to initialize this request's isolated state.
     todos: NotRequired[list[Todo]]
+    plan_checks: NotRequired[int]
+
+
+@after_model(state_schema=AssistantState, can_jump_to=["model"])
+def check_plan_commit(state, runtime):
+    """Request a real plan commit before accepting contradictory completion text.
+
+    Never infer completion or mark pending work complete on the model's behalf.
+    The retry bound prevents an uncooperative model from looping indefinitely.
+    """
+    messages = state["messages"]
+    final = messages[-1]
+    todos = state.get("todos", [])
+    if getattr(final, "tool_calls", None) or not todos or state.get("plan_checks", 0) >= 2:
+        return None
+    start = next(
+        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
+        0,
+    )
+    committed = any(
+        isinstance(m, ToolMessage) and m.name == "write_todos" for m in messages[start:]
+    )
+    user_text = str(messages[start].content)
+    edit_requested = bool(re.search(r"追加|调整|继续|完成|清空|修改|改为|规划", user_text))
+    contradiction = re.search(r"(?:所有|全部)待办(?:均|已经|已)?完成", str(final.content)) and any(
+        t["status"] != "completed" for t in todos
+    )
+    unfinished_active = any(t["status"] == "in_progress" for t in todos) and not re.search(
+        r"等待|缺少|缺失|无法|请提供|请确认|阻塞|不可行|未提供|待确认", str(final.content)
+    )
+    if (committed or not edit_requested) and not contradiction and not unfinished_active:
+        return None
+    return {
+        "plan_checks": state.get("plan_checks", 0) + 1,
+        "messages": [
+            SystemMessage(
+                content=(
+                    "交付校验：本轮缺少实际计划提交，或完成声明与状态矛盾。"
+                    "请调用write_todos提交与实际成果一致的完整计划，然后简短交付。"
+                    "追加保留原项；切换任务清空；实际完成的起草项更新完成；"
+                    "等待信息及未来执行项保持未完成，禁止为通过校验而全部标完成。"
+                )
+            )
+        ],
+        "jump_to": "model",
+    }
 
 
 @dynamic_prompt
@@ -90,7 +142,7 @@ def build_agent(settings: Settings) -> CompiledStateGraph:
         system_prompt=system_prompt,
         tools=build_tools(settings),
         backend=backend,
-        middleware=[planning_context, TodoListMiddleware()],
+        middleware=[planning_context, TodoListMiddleware(), check_plan_commit],
         state_schema=AssistantState,
         name="personal-assistant",
     )

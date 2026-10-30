@@ -15,6 +15,30 @@ def request():
     return ChatRequest(conversation_id=uuid4(), messages=[{"role": "user", "content": "你好"}])
 
 
+def test_explicit_plan_edits_emit_actual_snapshots():
+    class Graph:
+        async def astream(self, value, **kwargs):
+            assert value["todos"] == []
+            yield "messages", (SimpleNamespace(content="3"), {"langgraph_node": "model"})
+
+    async def check(text):
+        payload = ChatRequest(
+            conversation_id=uuid4(),
+            messages=[{"role": "user", "content": text}],
+            todos=[{"content": "原任务", "status": "completed"}],
+        )
+        return [e async for e in ChatService(Graph(), Settings()).stream(payload, str(uuid4()))]
+
+    appended = asyncio.run(check("请只在原待办末尾追加一项“等待确认”"))
+    assert appended[1]["todos"] == [
+        {"content": "原任务", "status": "completed"},
+        {"content": "等待确认", "status": "pending"},
+    ]
+    cleared = asyncio.run(check("清空当前任务计划。只回答数字3。"))
+    assert cleared[1] == {"type": "plan", "todos": []}
+    assert appended[-1]["type"] == cleared[-1]["type"] == "done"
+
+
 def test_cancel_reaches_agent():
     cancelled = []
 

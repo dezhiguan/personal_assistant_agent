@@ -18,6 +18,7 @@ from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.observability.costs import estimate_calls
 from personal_assistant_agent.observability.tracer import CostTracer
 from personal_assistant_agent.schemas.chat import ChatRequest, TodoList, ToolProgress
+from personal_assistant_agent.services.plan_edits import explicit_edit
 
 logger = logging.getLogger(__name__)
 todo_adapter = TypeAdapter(TodoList)
@@ -117,6 +118,14 @@ class ChatService:
         usage = None
         call_usage: dict[str, dict] = {}
         todos = [item.model_dump() for item in payload.todos]
+        edit = explicit_edit(payload.messages[-1].content, todos)
+        if edit is not None:
+            todos, acknowledgement = edit
+            yield {"type": "plan", "todos": todos}
+            if acknowledgement:
+                yield {"type": "delta", "text": acknowledgement}
+                yield {"type": "done", "request_id": request_id}
+                return
         tool_calls: dict[str, str] = {}
         try:
             with tracing_context(enabled=self.settings.tracing_configured):

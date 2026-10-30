@@ -270,6 +270,41 @@ def calculate(expression: str) -> dict:
         return {"error": "无法计算：表达式无效、超出限额、除零或使用了不允许的语法。"}
 
 
+@tool
+def validate_time_budget(
+    durations: list[float], available: float, expected_total: float | None = None
+) -> dict:
+    """核验完整议程或单人串行工期。所有数值必须使用相同单位。
+
+    durations逐项传入实际安排的非负时长（最多366项），available为可用总时长。
+    要求恰好填满时传expected_total；两周每天1小时需传10个每日时长，不能只传5项。
+    返回真实总和、超额、剩余及是否精确匹配；不允许凭正文声称已经核算。
+    不适用于并行资源或未列出的依赖；不能把此核验当实际执行完成。
+    """
+    values = [*durations, available]
+    if expected_total is not None:
+        values.append(expected_total)
+    if (
+        not durations
+        or len(durations) > 366
+        or any(not math.isfinite(v) or v < 0 or v > 1e9 for v in values)
+    ):
+        return {"error": "时长必须为有限非负数，至少1项、最多366项。"}
+    total = math.fsum(durations)
+    return {
+        "total": total,
+        "available": available,
+        "over_budget": max(0.0, total - available),
+        "remaining": max(0.0, available - total),
+        "fits": total <= available + 1e-9,
+        "matches_expected": (
+            math.isclose(total, expected_total, rel_tol=0, abs_tol=1e-9)
+            if expected_total is not None
+            else None
+        ),
+    }
+
+
 def build_tools(settings: Settings) -> list[BaseTool]:
     if not 0 < settings.baidu_timeout <= 60:
         raise ValueError("BAIDU_TIMEOUT_SECONDS 必须大于 0 且不超过 60。")
@@ -333,4 +368,4 @@ def build_tools(settings: Settings) -> list[BaseTool]:
         except (ValueError, LookupError):
             return {"source": "baidu", "error": "百度页面无法解析，未获得可用结果。"}
 
-    return [baidu_search, get_current_time, calculate]
+    return [baidu_search, get_current_time, calculate, validate_time_budget]
