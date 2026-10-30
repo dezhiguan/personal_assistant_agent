@@ -19,13 +19,14 @@ from langchain.agents.middleware import (
 )
 from langchain.agents.middleware.todo import Todo
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
 from personal_assistant_agent.agents.model import build_model
 from personal_assistant_agent.agents.tools import build_tools
 from personal_assistant_agent.agents.workspace import EXECUTE_DESCRIPTION, WorkspaceBackend
 from personal_assistant_agent.core.config import Settings
-from personal_assistant_agent.services.prompts import LOCAL_PROMPT, load_prompt
+from personal_assistant_agent.services.prompts import LOCAL_PROMPT, PromptVersion, load_prompt
 
 
 class AssistantState(DeepAgentState):
@@ -109,9 +110,11 @@ def planning_context(request: ModelRequest) -> SystemMessage:
     )
 
 
-def build_agent(settings: Settings) -> CompiledStateGraph:
+def build_agent(
+    settings: Settings, *, tools: list[BaseTool] | None = None, prompt: PromptVersion | None = None
+) -> CompiledStateGraph:
     model = build_model(settings)
-    prompt = load_prompt(settings)
+    prompt = prompt or load_prompt(settings)
     # A previously pinned hosted prompt can still describe the text-only MVP.
     # Always end with the current deployment's capabilities and safety rules.
     system_prompt = prompt.text
@@ -140,7 +143,7 @@ def build_agent(settings: Settings) -> CompiledStateGraph:
     return create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        tools=build_tools(settings),
+        tools=build_tools(settings) if tools is None else tools,
         backend=backend,
         middleware=[planning_context, TodoListMiddleware(), check_plan_commit],
         state_schema=AssistantState,

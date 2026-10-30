@@ -1,0 +1,48 @@
+name: Agent regression
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: uv sync --group dev
+      - run: make test golden-offline
+
+  live:
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
+    needs: offline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: golden-evaluation
+    env:
+      DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+      MODEL_NAME: qwen3.8-flash
+      LANGSMITH_PROMPT_REF: ${{ vars.LANGSMITH_PROMPT_REF }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      LANGSMITH_TRACING: 'false'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.13'
+      - run: uv sync --group dev
+      - run: make golden
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: golden-report
+          path: artifacts/golden/latest.json
