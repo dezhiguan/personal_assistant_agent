@@ -13,4 +13,5 @@ artifacts
 dist
 build
 workspace
+.assistant-private
 .github

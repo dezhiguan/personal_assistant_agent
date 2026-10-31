@@ -25,6 +25,7 @@ def create_deployment_app(chat: FastAPI) -> Starlette:
         routes=[
             Route("/", endpoint=chat, methods=["GET"]),
             Route("/api/chat", endpoint=chat, methods=["POST"]),
+            Route("/api/calendar/{event_id}.ics", endpoint=chat, methods=["GET"]),
             Route("/healthz", endpoint=chat, methods=["GET"]),
             Mount("/static", app=StaticFiles(directory=STATIC_DIR)),
         ],

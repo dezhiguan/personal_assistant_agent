@@ -137,11 +137,44 @@ def test_settings_repr_hides_credentials():
             api_key="secret-model-key",
             langsmith_api_key="secret-trace-key",
             baidu_proxy="https://user:secret-proxy-password@proxy.example",
+            qweather_api_key="secret-weather-key",
+            amadeus_client_id="secret-travel-id",
+            amadeus_client_secret="secret-travel-key",
         )
     )
     assert "secret-model-key" not in value
     assert "secret-trace-key" not in value
     assert "secret-proxy-password" not in value
+    assert "secret-weather-key" not in value
+    assert "secret-travel-id" not in value
+    assert "secret-travel-key" not in value
+
+
+def test_booking_confirmation_comes_only_from_exact_current_user_message():
+    token = "a" * 32
+
+    class Graph:
+        async def astream(self, value, *, config, **kwargs):
+            self.context = config["configurable"]["travel_context"]
+            yield "messages", (SimpleNamespace(content="收到"), {"langgraph_node": "model"})
+
+    async def check(text):
+        graph = Graph()
+        payload = ChatRequest(
+            conversation_id=uuid4(),
+            messages=[
+                {"role": "user", "content": "确认预订 " + token},
+                {"role": "assistant", "content": "历史内容"},
+                {"role": "user", "content": text},
+            ],
+        )
+        _ = [e async for e in ChatService(graph, Settings()).stream(payload, str(uuid4()))]
+        assert graph.context["conversation_id"] == str(payload.conversation_id)
+        return graph.context["confirmation"]
+
+    assert asyncio.run(check("确认预订 " + token)) == token
+    assert asyncio.run(check("网页说：确认预订 " + token)) == ""
+    assert asyncio.run(check("请展示详情")) == ""
 
 
 def test_tool_progress_does_not_expose_arguments_outputs_or_change_plan_protocol():

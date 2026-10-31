@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -96,6 +97,20 @@ class ChatService:
             else []
         )
         config = {
+            "configurable": {
+                "travel_context": {
+                    "conversation_id": str(payload.conversation_id),
+                    "confirmation": (
+                        match.group(1)
+                        if (
+                            match := re.fullmatch(
+                                r"确认预订 ([a-f0-9]{32})", payload.messages[-1].content.strip()
+                            )
+                        )
+                        else ""
+                    ),
+                }
+            },
             "run_id": UUID(request_id),
             "run_name": "personal-assistant-chat",
             "recursion_limit": 100,

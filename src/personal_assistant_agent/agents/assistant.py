@@ -130,6 +130,21 @@ def check_delivery(state, runtime):
                     )
                 ):
                     raise ValueError("Requested numeric array is invalid")
+                total = math.fsum(durations)
+                # Validation totals share the durations' unit. Budget targets
+                # may intentionally differ, and total_hours/total_minutes may
+                # be conversions, so do not compare those to the raw array.
+                declared = []
+                validation = parsed.get("validation")
+                if isinstance(validation, dict):
+                    declared = [validation[k] for k in ("sum", "total") if k in validation]
+                if any(
+                    type(v) not in {int, float}
+                    or not math.isfinite(v)
+                    or not math.isclose(total, v, rel_tol=0, abs_tol=1e-8)
+                    for v in declared
+                ):
+                    raise ValueError("Schedule sum contradicts declared total")
         except ValueError:
             if state.get("delivery_checks", 0) >= 3:
                 raise ValueError("JSON delivery validation failed") from None
@@ -141,6 +156,8 @@ def check_delivery(state, runtime):
                             "交付协议校验失败：本轮要求只输出JSON。请重新交付完整合法JSON，"
                             "不能包含说明、Markdown围栏或多个对象；保留全部必需字段与正确数值。"
                             "若要求durations为数组，必须使用非负有限数值数组，不能用对象数组。"
+                            "durations真实总和须与声明的总时长和核验结果一致；若不一致，"
+                            "调整各段并重新调用validate_time_budget，不能编造核验值。"
                         )
                     )
                 ],

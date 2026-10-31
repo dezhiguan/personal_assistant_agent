@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from personal_assistant_agent.agents.assistant import build_agent
+from personal_assistant_agent.api.calendar import router as calendar_router
 from personal_assistant_agent.api.chat import router as chat_router
 from personal_assistant_agent.api.health import router as health_router
 from personal_assistant_agent.api.traces import router as traces_router
@@ -40,6 +41,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health_router)
     app.include_router(traces_router)
     app.include_router(chat_router)
+    app.include_router(calendar_router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)

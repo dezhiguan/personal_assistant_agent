@@ -21,6 +21,17 @@ class Settings:
     workspace_dir: str = "workspace"
     baidu_timeout: float = 10
     baidu_proxy: str = field(default="", repr=False)
+    tool_timeout: float = 15
+    amap_api_key: str = field(default="", repr=False)
+    qweather_host: str = field(default="", repr=False)
+    qweather_api_key: str = field(default="", repr=False)
+    travel_provider: str = "amadeus"
+    tuniu_api_key: str = field(default="", repr=False)
+    tuniu_mcp_base_url: str = "https://openapi.tuniu.cn/mcp"
+    amadeus_client_id: str = field(default="", repr=False)
+    amadeus_client_secret: str = field(default="", repr=False)
+    amadeus_environment: str = "test"
+    travel_private_dir: str = ".assistant-private"
 
     @property
     def model_configured(self) -> bool:
@@ -48,4 +59,15 @@ def get_settings() -> Settings:
         workspace_dir=os.getenv("ASSISTANT_WORKSPACE_DIR", "workspace").strip(),
         baidu_timeout=float(os.getenv("BAIDU_TIMEOUT_SECONDS", "10")),
         baidu_proxy=os.getenv("BAIDU_HTTP_PROXY", "").strip(),
+        tool_timeout=float(os.getenv("TOOL_TIMEOUT_SECONDS", "15")),
+        amap_api_key=os.getenv("AMAP_API_KEY", ""),
+        qweather_host=os.getenv("QWEATHER_API_HOST", "").strip(),
+        qweather_api_key=os.getenv("QWEATHER_API_KEY", ""),
+        travel_provider=os.getenv("TRAVEL_PROVIDER", "amadeus").strip(),
+        tuniu_api_key=os.getenv("TUNIU_API_KEY", ""),
+        tuniu_mcp_base_url=os.getenv("TUNIU_MCP_BASE_URL", "https://openapi.tuniu.cn/mcp").strip(),
+        amadeus_client_id=os.getenv("AMADEUS_CLIENT_ID", ""),
+        amadeus_client_secret=os.getenv("AMADEUS_CLIENT_SECRET", ""),
+        amadeus_environment=os.getenv("AMADEUS_ENVIRONMENT", "test").strip(),
+        travel_private_dir=os.getenv("TRAVEL_PRIVATE_DIR", ".assistant-private").strip(),
     )

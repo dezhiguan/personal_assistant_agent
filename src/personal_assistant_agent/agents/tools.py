@@ -368,4 +368,13 @@ def build_tools(settings: Settings) -> list[BaseTool]:
         except (ValueError, LookupError):
             return {"source": "baidu", "error": "百度页面无法解析，未获得可用结果。"}
 
-    return [baidu_search, get_current_time, calculate, validate_time_budget]
+    from personal_assistant_agent.agents.amap_tools import build_amap_tools
+    from personal_assistant_agent.agents.calendar_tools import build_calendar_tools
+    from personal_assistant_agent.agents.life_tools import build_life_tools
+    from personal_assistant_agent.agents.travel_tools import build_travel_tools
+
+    return [
+        baidu_search, get_current_time, calculate, validate_time_budget,
+        *build_life_tools(settings), *build_travel_tools(settings), *build_calendar_tools(settings),
+        *build_amap_tools(settings),
+    ]

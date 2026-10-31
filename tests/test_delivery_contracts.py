@@ -156,3 +156,35 @@ def test_requested_duration_array_rejects_objects(tmp_path, monkeypatch):
     )
     assert result["messages"][-1].content == '{"durations":[30]}'
     assert result["delivery_checks"] == 1
+
+
+@pytest.mark.parametrize(
+    "declared",
+    [
+        '"validation":{"sum":45}',
+        '"validation":{"total":45}',
+    ],
+)
+def test_schedule_cannot_claim_a_total_different_from_its_actual_array(
+    tmp_path, monkeypatch, declared
+):
+    monkeypatch.chdir(tmp_path)
+    result = invoke(
+        [
+            AIMessage(content='{"durations":[5,10,15,5,5],' + declared + "}"),
+            AIMessage(content='{"durations":[5,10,20,5,5],"total_minutes":45}'),
+        ],
+        "设计45分钟议程，最终只输出JSON，durations是各段分钟数。",
+    )
+    assert result["delivery_checks"] == 1
+    assert "[5,10,20,5,5]" in result["messages"][-1].content
+
+
+def test_schedule_allows_different_budget_target_and_converted_units(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    content = (
+        '{"durations":[5,10,15,5,5],"total_minutes":40,"total_hours":0.6666666667,'
+        '"expected_total":45,"validation":{"total":40,"matches_expected":false}}'
+    )
+    result = invoke([AIMessage(content=content)], "最终只输出JSON，durations是各段分钟数。")
+    assert result["messages"][-1].content == content
