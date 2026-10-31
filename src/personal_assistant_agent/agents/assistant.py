@@ -1,6 +1,7 @@
 """Qwen-powered Deep Agent with planning, workspace execution and server tools."""
 
 import json
+import math
 import re
 from typing import NotRequired
 
@@ -15,6 +16,7 @@ from langchain.agents.middleware import (
     ModelRequest,
     TodoListMiddleware,
     after_model,
+    before_model,
     dynamic_prompt,
 )
 from langchain.agents.middleware.todo import Todo
@@ -34,6 +36,136 @@ class AssistantState(DeepAgentState):
     # validated browser snapshot to initialize this request's isolated state.
     todos: NotRequired[list[Todo]]
     plan_checks: NotRequired[int]
+    delivery_checks: NotRequired[int]
+
+
+@before_model(state_schema=AssistantState)
+def initialize_plan(state, runtime):
+    """Seed explicit multi-deliverable requests before any work is performed."""
+    from personal_assistant_agent.services.delivery import initial_steps
+
+    if state.get("todos"):
+        return None
+    messages = state["messages"]
+    start = next(
+        (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)), 0
+    )
+    # Only once per turn; never resurrect a cleared or already executed plan.
+    if any(isinstance(m, ToolMessage) for m in messages[start:]):
+        return None
+    steps = initial_steps(str(messages[start].content))
+    if steps and len(messages) == start + 1:
+        return {"todos": [{"content": step, "status": "pending"} for step in steps]}
+    return None
+
+
+@after_model(state_schema=AssistantState, can_jump_to=["model"])
+def check_delivery(state, runtime):
+    from personal_assistant_agent.services.delivery import length_limit, visible_length
+
+    messages = state["messages"]
+    final = messages[-1]
+    user = next(m for m in reversed(messages) if isinstance(m, HumanMessage))
+    calls = getattr(final, "tool_calls", [])
+    # Completed deliverables are immutable records. Rework is a new task that
+    # references the original; drafting must never become execution in place.
+    preserve_all = bool(
+        re.search(r"保留.*(?:其他|其余|原|已有)|(?:其他|其余).*保留", str(user.content))
+    )
+    protected = [t for t in state.get("todos", []) if t["status"] == "completed" or preserve_all]
+    amended = False
+    for call in calls:
+        if call["name"] == "write_todos":
+            proposed = call["args"].get("todos", [])
+            if any(t not in proposed for t in protected):
+                # Apply an append-only contract to completed records before the
+                # actual tool runs. Its result reports the amended snapshot, so
+                # the model sees exactly what was committed. No status is inferred.
+                protected_content = {t["content"] for t in protected}
+                proposed_by_content = {t["content"]: t for t in proposed}
+                retained = [
+                    t if t["status"] == "completed" else proposed_by_content.get(t["content"], t)
+                    for t in state.get("todos", [])
+                    if t["status"] == "completed"
+                    or preserve_all
+                    or t["content"] in proposed_by_content
+                ]
+                retained_content = {t["content"] for t in retained}
+                merged = [
+                    *retained,
+                    *[
+                        t
+                        for t in proposed
+                        if t["content"] not in retained_content | protected_content
+                    ],
+                ]
+                if len(merged) > 32:
+                    raise ValueError("Preserving completed records exceeds plan capacity")
+                call["args"]["todos"] = merged
+                amended = True
+    if calls:
+        return {"messages": [final]} if amended else None
+    from personal_assistant_agent.services.scheduling import verified_serial_answer
+
+    verified = verified_serial_answer(str(user.content))
+    if verified:
+        final.content = verified
+    json_only = bool(re.search(r"只(?:输出|返回)\s*JSON", str(user.content), re.I))
+    if json_only:
+        from personal_assistant_agent.evaluation.golden import _json
+
+        try:
+            parsed = _json(str(final.content))
+            if "durations" in str(user.content):
+                durations = parsed.get("durations") if isinstance(parsed, dict) else None
+                if (
+                    not isinstance(durations, list)
+                    or not durations
+                    or any(
+                        isinstance(v, bool)
+                        or not isinstance(v, (int, float))
+                        or not math.isfinite(v)
+                        or v < 0
+                        for v in durations
+                    )
+                ):
+                    raise ValueError("Requested numeric array is invalid")
+        except ValueError:
+            if state.get("delivery_checks", 0) >= 3:
+                raise ValueError("JSON delivery validation failed") from None
+            return {
+                "delivery_checks": state.get("delivery_checks", 0) + 1,
+                "messages": [
+                    SystemMessage(
+                        content=(
+                            "交付协议校验失败：本轮要求只输出JSON。请重新交付完整合法JSON，"
+                            "不能包含说明、Markdown围栏或多个对象；保留全部必需字段与正确数值。"
+                            "若要求durations为数组，必须使用非负有限数值数组，不能用对象数组。"
+                        )
+                    )
+                ],
+                "jump_to": "model",
+            }
+    limit = length_limit(str(user.content))
+    if (
+        limit
+        and (len(str(final.content)) if json_only else visible_length(str(final.content))) > limit
+    ):
+        if state.get("delivery_checks", 0) >= 3:
+            raise ValueError("Delivery length validation failed")
+        return {
+            "delivery_checks": state.get("delivery_checks", 0) + 1,
+            "messages": [
+                SystemMessage(
+                    content=(
+                        f"正文尚未交付：可见字符超出{limit}字上限。请重新组织为一份完整精简稿，"
+                        "保留全部必需成果、约束和关键假设；不要截断，不重复旧稿，勿再更新已完成计划。"
+                    )
+                )
+            ],
+            "jump_to": "model",
+        }
+    return {"messages": [final]} if verified else None
 
 
 @after_model(state_schema=AssistantState, can_jump_to=["model"])
@@ -46,7 +178,7 @@ def check_plan_commit(state, runtime):
     messages = state["messages"]
     final = messages[-1]
     todos = state.get("todos", [])
-    if getattr(final, "tool_calls", None) or not todos or state.get("plan_checks", 0) >= 2:
+    if getattr(final, "tool_calls", None) or not todos:
         return None
     start = next(
         (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
@@ -56,7 +188,11 @@ def check_plan_commit(state, runtime):
         isinstance(m, ToolMessage) and m.name == "write_todos" for m in messages[start:]
     )
     user_text = str(messages[start].content)
-    edit_requested = bool(re.search(r"追加|调整|继续|完成|清空|修改|改为|规划", user_text))
+    from personal_assistant_agent.services.delivery import initial_steps
+
+    edit_requested = bool(initial_steps(user_text)) or bool(
+        re.search(r"追加|调整|继续|完成|清空|修改|改为|规划", user_text)
+    )
     contradiction = re.search(r"(?:所有|全部)待办(?:均|已经|已)?完成", str(final.content)) and any(
         t["status"] != "completed" for t in todos
     )
@@ -65,6 +201,8 @@ def check_plan_commit(state, runtime):
     )
     if (committed or not edit_requested) and not contradiction and not unfinished_active:
         return None
+    if state.get("plan_checks", 0) >= 2:
+        raise ValueError("Plan commit validation failed")
     return {
         "plan_checks": state.get("plan_checks", 0) + 1,
         "messages": [
@@ -145,7 +283,13 @@ def build_agent(
         system_prompt=system_prompt,
         tools=build_tools(settings) if tools is None else tools,
         backend=backend,
-        middleware=[planning_context, TodoListMiddleware(), check_plan_commit],
+        middleware=[
+            planning_context,
+            TodoListMiddleware(),
+            initialize_plan,
+            check_plan_commit,
+            check_delivery,
+        ],
         state_schema=AssistantState,
         name="personal-assistant",
     )

@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from personal_assistant_agent.agents.assistant import build_agent
 from personal_assistant_agent.api.chat import router as chat_router
 from personal_assistant_agent.api.health import router as health_router
+from personal_assistant_agent.api.traces import router as traces_router
 from personal_assistant_agent.core.config import Settings, get_settings
 from personal_assistant_agent.services.chat import ChatService
 
@@ -37,6 +38,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app = FastAPI(title="个人智能助理", version="0.1.0", lifespan=lifespan)
     app.include_router(health_router)
+    app.include_router(traces_router)
     app.include_router(chat_router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 

@@ -243,3 +243,19 @@ def test_structured_tool_errors_are_reported_as_failure_in_progress():
     events = asyncio.run(check())
     assert [e["status"] for e in events if e["type"] == "tool"] == ["running", "error"]
     assert events[-1]["type"] == "done"
+
+
+def test_repair_drafts_are_not_concatenated_into_delivery():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield "messages", (SimpleNamespace(content="错误旧稿"), {"langgraph_node": "model"})
+            yield "updates", {"model": {"messages": [AIMessage(content="错误旧稿")]}}
+            yield "messages", (SimpleNamespace(content="正确终稿"), {"langgraph_node": "model"})
+            yield "updates", {"model": {"messages": [AIMessage(content="正确终稿")]}}
+
+    async def check():
+        return [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
+
+    events = asyncio.run(check())
+    assert "".join(e.get("text", "") for e in events if e["type"] == "delta") == "正确终稿"
+    assert events[-1]["type"] == "done"

@@ -161,10 +161,12 @@ textarea::placeholder { color: #a4a7af; }
 .assistant-body table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; line-height: 1.7; }
 .assistant-body th, .assistant-body td { min-width: 90px; padding: 9px 12px; border: 1px solid #e4e7ed; vertical-align: top; }
 .assistant-body th { background: #f6f7f9; color: #414854; font-weight: 600; }
-.message-actions { padding-left: 28px; margin-top: 9px; }
-.copy { display: inline-flex; align-items: center; gap: 5px; padding: 5px; color: #a0a5af; font-size: 10px; }
-.copy svg { width: 13px; height: 13px; }
+.message-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-left: 28px; margin-top: 9px; }
+.copy, .trace-link { display: inline-flex; align-items: center; gap: 5px; padding: 5px; color: #a0a5af; font-size: 10px; text-decoration: none; }
+.copy svg, .trace-link svg { width: 13px; height: 13px; }
 .copy:hover { color: var(--ink); }
+.trace-link { padding: 5px 9px; border: 1px solid #c6dafb; border-radius: 6px; background: #eaf2ff; color: #245bc9; font-size: 11px; font-weight: 600; transition: background-color .15s, border-color .15s; }
+.trace-link:hover { border-color: #90b6f3; background: #dceaff; color: #1947a4; }
 .message-state { padding-left: 33px; margin-top: 8px; color: #979ca6; font-size: 11px; }
 .message-error { padding: 12px 14px; margin: 12px 0 0 33px; border: 1px solid #ecdcd3; border-radius: 7px; background: #fcf7f4; color: #a07861; font-size: 12px; line-height: 1.8; }
 .retry { display: inline-flex; align-items: center; padding: 4px 9px; margin-top: 8px; border: 1px solid #dcc5b9; border-radius: 5px; background: #fff; color: #8f6953; font-size: 11px; }

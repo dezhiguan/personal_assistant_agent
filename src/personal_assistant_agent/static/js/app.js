@@ -8,6 +8,7 @@ let sessions = [];
 let currentId = null;
 let job = null;
 let toastTimer;
+let tracingEnabled = false;
 
 function toast(text) {
   clearTimeout(toastTimer);
@@ -155,15 +156,29 @@ function renderAssistant(row, message, session) {
     }
     row.append(error);
   }
-  if (message.text && message.state !== 'streaming') {
+  const hasTrace = tracingEnabled && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(message.requestId || '');
+  if ((message.text || hasTrace) && message.state !== 'streaming') {
     const actions = document.createElement('div');
     actions.className = 'message-actions';
-    const copy = document.createElement('button');
-    copy.className = 'copy';
-    copy.setAttribute('aria-label', '复制这条回复');
-    copy.append(icon('copy'), document.createTextNode('复制'));
-    copy.addEventListener('click', () => copyText(body.innerText));
-    actions.append(copy);
+    if (message.text) {
+      const copy = document.createElement('button');
+      copy.className = 'copy';
+      copy.setAttribute('aria-label', '复制这条回复');
+      copy.append(icon('copy'), document.createTextNode('复制'));
+      copy.addEventListener('click', () => copyText(body.innerText));
+      actions.append(copy);
+    }
+    if (hasTrace) {
+      const trace = document.createElement('a');
+      trace.className = 'trace-link';
+      trace.href = '/api/traces/' + encodeURIComponent(message.requestId);
+      trace.target = '_blank';
+      trace.rel = 'noopener noreferrer';
+      trace.setAttribute('aria-label', '查看这条回复的 LangSmith 链路追踪（新标签页）');
+      trace.title = '在 LangSmith 中查看本次请求的链路追踪';
+      trace.append(icon('external'), document.createTextNode('LangSmith 追踪'));
+      actions.append(trace);
+    }
     row.append(actions);
   }
 }
@@ -346,6 +361,9 @@ function newChat() {
 async function refreshStatus() {
   try {
     const status = await getStatus();
+    const tracingChanged = tracingEnabled !== !!status.tracing_enabled;
+    tracingEnabled = !!status.tracing_enabled;
+    if (tracingChanged) renderMessages();
     $('connection-note').hidden = status.model_configured;
     $('connection-note').textContent = 'Qwen 尚未就绪，请先完成服务端模型配置。';
   } catch {

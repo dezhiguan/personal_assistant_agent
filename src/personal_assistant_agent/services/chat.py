@@ -115,6 +115,9 @@ class ChatService:
             "tracing_enabled": self.settings.tracing_configured,
         }
         received_text = False
+        buffered_text = ""
+        buffered_chunks = []
+        final_text = ""
         usage = None
         call_usage: dict[str, dict] = {}
         todos = [item.model_dump() for item in payload.todos]
@@ -146,6 +149,14 @@ class ChatService:
                                     continue
                                 for message in update.get("messages", []):
                                     if isinstance(message, AIMessage):
+                                        buffered_text = ""
+                                        buffered_chunks = []
+                                        if not message.tool_calls and isinstance(
+                                            message.content, str
+                                        ):
+                                            final_text = message.content
+                                        else:
+                                            final_text = ""
                                         for call in message.tool_calls:
                                             if call["name"] == "write_todos":
                                                 continue
@@ -198,8 +209,13 @@ class ChatService:
                         )
                         if text:
                             received_text = True
-                            yield {"type": "delta", "text": text}
-            if not received_text:
+                            buffered_text += text
+                            buffered_chunks.append(text)
+            delivered = final_text or buffered_text
+            if delivered:
+                for part in [final_text] if final_text else buffered_chunks:
+                    yield {"type": "delta", "text": part}
+            if not received_text and not delivered:
                 raise RuntimeError("Model completed without text")
             if usage_collector.calls:
                 call_usage = usage_collector.calls

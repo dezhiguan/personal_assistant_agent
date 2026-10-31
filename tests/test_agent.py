@@ -6,6 +6,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 import httpx
+import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
@@ -306,18 +307,19 @@ def test_restored_todos_are_visible_to_model_without_shared_state():
 
     async def check():
         agent = build_agent(Settings(api_key="test-only"))
-        await agent.ainvoke(
-            {
-                "messages": [{"role": "user", "content": "继续"}],
-                "todos": [{"content": "调整产品发布计划", "status": "in_progress"}],
-            }
-        )
+        with pytest.raises(ValueError, match="Plan commit validation failed"):
+            await agent.ainvoke(
+                {
+                    "messages": [{"role": "user", "content": "继续"}],
+                    "todos": [{"content": "调整产品发布计划", "status": "in_progress"}],
+                }
+            )
         await agent.ainvoke({"messages": [{"role": "user", "content": "你好"}], "todos": []})
 
     with patch("langchain_openai.ChatOpenAI._agenerate", generate):
         asyncio.run(check())
     assert "调整产品发布计划" in prompts[0]
-    # A restored plan with no commit receives two bounded correction attempts.
+    # Two correction attempts, then fail closed; the next session stays isolated.
     assert len(prompts) == 4
     assert "调整产品发布计划" not in prompts[-1]
 
