@@ -13,6 +13,7 @@ from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededErr
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.messages.ai import add_usage
 from langgraph.errors import GraphRecursionError
+from langgraph.types import Command
 from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
 from pydantic import TypeAdapter
@@ -26,6 +27,17 @@ from personal_assistant_agent.services.plan_edits import explicit_edit
 
 logger = logging.getLogger(__name__)
 todo_adapter = TypeAdapter(TodoList)
+
+
+def _state_updates(value):
+    """Compaction can make a model node emit Commands instead of a plain update."""
+    if isinstance(value, dict):
+        yield value
+    elif isinstance(value, Command) and isinstance(value.update, dict):
+        yield value.update
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _state_updates(item)
 
 
 def _tool_failed(message: ToolMessage) -> bool:
@@ -42,6 +54,13 @@ def _tool_failed(message: ToolMessage) -> bool:
 
 def public_error(error: Exception) -> tuple[str, str]:
     """Return safe errors without provider bodies, keys, or stack traces."""
+    from langchain_core.exceptions import ContextOverflowError
+
+    if isinstance(error, ContextOverflowError):
+        return (
+            "MODEL_CONTEXT_LIMIT",
+            "压缩后仍超过上下文预算，请缩短本次输入、减少启用工具或调大模拟窗口。",
+        )
     if isinstance(error, AuthenticationError):
         return "MODEL_AUTH_ERROR", "Qwen 认证失败，请检查服务端的 API Key 和地域。"
     if isinstance(error, RateLimitError):
@@ -169,9 +188,11 @@ class ChatService:
                             yield data
                             continue
                         if mode == "updates":
-                            for update in data.values():
-                                if not isinstance(update, dict):
-                                    continue
+                            for update in (
+                                update
+                                for value in data.values()
+                                for update in _state_updates(value)
+                            ):
                                 for message in update.get("messages", []):
                                     if isinstance(message, AIMessage):
                                         buffered_text = ""
@@ -214,7 +235,11 @@ class ChatService:
                         if mode != "messages":
                             continue
                         chunk, metadata = data
-                        if metadata.get("langgraph_node") != "model":
+                        if (
+                            metadata.get("langgraph_node") != "model"
+                            or metadata.get("lc_source") == "summarization"
+                            or metadata.get("lc_internal_call")
+                        ):
                             continue
                         if chunk_usage := getattr(chunk, "usage_metadata", None):
                             usage = add_usage(usage, chunk_usage)

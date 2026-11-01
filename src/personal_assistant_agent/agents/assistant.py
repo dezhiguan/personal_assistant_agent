@@ -3,6 +3,7 @@
 import json
 import math
 import re
+from threading import RLock
 from typing import NotRequired
 
 from deepagents import (
@@ -12,6 +13,7 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.graph import DeepAgentState
+from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import (
     ModelCallLimitMiddleware,
     ModelRequest,
@@ -26,11 +28,14 @@ from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
+from personal_assistant_agent.agents.context import ContextWindowMiddleware
 from personal_assistant_agent.agents.model import build_model
 from personal_assistant_agent.agents.tools import build_tools
 from personal_assistant_agent.agents.workspace import EXECUTE_DESCRIPTION, WorkspaceBackend
 from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.services.prompts import LOCAL_PROMPT, PromptVersion, load_prompt
+
+_BUILD_LOCK = RLock()
 
 
 class AssistantState(DeepAgentState):
@@ -370,6 +375,15 @@ def planning_context(request: ModelRequest) -> SystemMessage:
 def build_agent(
     settings: Settings, *, tools: list[BaseTool] | None = None, prompt: PromptVersion | None = None
 ) -> CompiledStateGraph:
+    # Harness registration is additive and process-global. Keep registration and
+    # graph construction together so concurrent fixtures cannot borrow a backend.
+    with _BUILD_LOCK:
+        return _build_agent(settings, tools=tools, prompt=prompt)
+
+
+def _build_agent(
+    settings: Settings, *, tools: list[BaseTool] | None = None, prompt: PromptVersion | None = None
+) -> CompiledStateGraph:
     if not 1 <= settings.max_model_calls <= 512 or not 1 <= settings.max_tool_calls <= 1024:
         raise ValueError("模型调用限额须为1–512，工具调用限额须为1–1024。")
     if not 256 <= settings.max_output_tokens <= 32768:
@@ -385,11 +399,19 @@ def build_agent(
             + LOCAL_PROMPT.read_text().strip()
         )
     backend = WorkspaceBackend(settings.workspace_dir)
+    agent_tools = build_tools(settings) if tools is None else tools
+    if settings.context_window_tokens and tools is None:
+        unknown = set(settings.context_tool_names) - {tool.name for tool in agent_tools}
+        if unknown:
+            raise ValueError("MODEL_CONTEXT_TOOL_NAMES 包含未知工具：" + ", ".join(sorted(unknown)))
+        agent_tools = [tool for tool in agent_tools if tool.name in settings.context_tool_names]
     # Deep Agents resolves profiles using the model's tracing provider, which
     # may be a Qwen pricing alias rather than "openai".
     register_harness_profile(
         f"{model._get_ls_params()['ls_provider']}:{settings.model_name}",
         HarnessProfile(
+            excluded_middleware=frozenset({SummarizationMiddleware}),
+            extra_middleware=lambda: [ContextWindowMiddleware(model, backend, settings)],
             general_purpose_subagent=GeneralPurposeSubagentProfile(
                 enabled=True,
                 system_prompt=system_prompt
@@ -404,7 +426,7 @@ def build_agent(
     return create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        tools=build_tools(settings) if tools is None else tools,
+        tools=agent_tools,
         backend=backend,
         middleware=[
             ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="error"),

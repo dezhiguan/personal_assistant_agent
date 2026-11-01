@@ -50,10 +50,21 @@ export function elapsed(trace) {
 }
 
 export function summarize(trace) {
-  if (trace.summary) return trace.summary;
   const models = trace.spans.filter(s => s.kind === 'model');
+  const tokenSum = key => {
+    const known = models.filter(s => Number.isFinite(s.usage?.[key]));
+    return known.length ? known.reduce((sum, s) => sum + s.usage[key], 0)
+      : (trace.summary?.model_calls ?? models.length) > 0 ? null : 0;
+  };
+  if (trace.summary) return {
+    ...trace.summary,
+    input_tokens: trace.summary.input_tokens ?? tokenSum('input_tokens'),
+    output_tokens: trace.summary.output_tokens ?? tokenSum('output_tokens'),
+  };
   const tools = trace.spans.filter(s => s.kind === 'tool');
   return {
+    input_tokens: tokenSum('input_tokens'),
+    output_tokens: tokenSum('output_tokens'),
     total_tokens: models.reduce((sum, s) => sum + (s.usage?.total_tokens || 0), 0),
     usage_complete: models.every(s => s.usage != null),
     measured_model_calls: models.filter(s => s.usage != null).length,
@@ -176,15 +187,24 @@ export class TimelinePanel {
     const timeSource = trace.summary?.duration_ms != null ? '总耗时'
       : trace.state === 'running' ? '已等待 · 浏览器计时' : '等待时间 · 浏览器计时';
     timeMetric.append(el('span', '', timeSource), totalTime);
-    const tokenMetric = el('div');
     const measuredCalls = summary.measured_model_calls ?? trace.spans.filter(s => s.kind === 'model' && s.usage != null).length;
-    tokenMetric.append(el('span', '', summary.usage_complete ? 'Token' : '已知 Token · 不完整'),
-      el('strong', '', summary.model_calls > 0 && measuredCalls === 0 ? '未知' : summary.total_tokens.toLocaleString('zh-CN')));
+    const tokenMetrics = [
+      ['总 Token', summary.total_tokens],
+      ['输入 Token', summary.input_tokens],
+      ['输出 Token', summary.output_tokens],
+    ].map(([label, value]) => {
+      const metric = el('div');
+      metric.title = '本轮所有模型调用的累计用量。';
+      metric.append(el('span', '', summary.usage_complete ? label : `已知${label} · 不完整`),
+        el('strong', '', summary.model_calls > 0 && measuredCalls === 0 || !Number.isFinite(value)
+          ? '未知' : value.toLocaleString('zh-CN')));
+      return metric;
+    });
     const costMetric = el('div', 'trace-cost-total');
     const pricedCalls = summary.priced_model_calls ?? trace.spans.filter(s => s.kind === 'model' && s.cost_estimate != null).length;
     costMetric.append(el('span', '', summary.cost_complete ? '总成本 · 估算' : '已知成本 · 估算，不完整'),
       el('strong', '', summary.model_calls > 0 && pricedCalls === 0 ? '未知' : money(summary.model_cost_estimate_cny)));
-    metrics.append(timeMetric, tokenMetric, costMetric);
+    metrics.append(timeMetric, ...tokenMetrics, costMetric);
     this.root.append(metrics);
     const count = el('p', 'trace-count', `${summary.model_calls} 次模型调用 · ${summary.tool_calls} 次工具调用`);
     this.root.append(count);

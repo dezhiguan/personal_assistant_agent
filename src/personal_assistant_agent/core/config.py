@@ -14,6 +14,14 @@ class Settings:
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     request_timeout: float = 90
     max_output_tokens: int = 8192
+    context_window_tokens: int = 0
+    context_output_reserve_tokens: int = 2048
+    context_tool_names: tuple[str, ...] = (
+        "baidu_search",
+        "get_current_time",
+        "calculate",
+        "validate_time_budget",
+    )
     workflow_timeout: float = 1200
     recursion_limit: int = 2048
     max_model_calls: int = 96
@@ -58,6 +66,16 @@ def get_settings() -> Settings:
         ).strip(),
         request_timeout=float(os.getenv("MODEL_TIMEOUT_SECONDS", "90")),
         max_output_tokens=int(os.getenv("MODEL_MAX_OUTPUT_TOKENS", "8192")),
+        context_window_tokens=int(os.getenv("MODEL_CONTEXT_WINDOW_TOKENS", "0")),
+        context_output_reserve_tokens=int(os.getenv("MODEL_CONTEXT_OUTPUT_RESERVE_TOKENS", "2048")),
+        context_tool_names=tuple(
+            name.strip()
+            for name in os.getenv(
+                "MODEL_CONTEXT_TOOL_NAMES",
+                "baidu_search,get_current_time,calculate,validate_time_budget",
+            ).split(",")
+            if name.strip()
+        ),
         workflow_timeout=float(os.getenv("WORKFLOW_TIMEOUT_SECONDS", "1200")),
         recursion_limit=int(os.getenv("AGENT_RECURSION_LIMIT", "2048")),
         max_model_calls=int(os.getenv("AGENT_MAX_MODEL_CALLS", "96")),

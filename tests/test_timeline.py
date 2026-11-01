@@ -81,6 +81,8 @@ def test_nested_models_count_once_and_cost_uses_each_calls_own_context_tier():
         c.on_tool_end("private subagent response", run_id="task")
         summary = c.summary()
         assert summary["model_calls"] == 2
+        assert summary["input_tokens"] == 140000
+        assert summary["output_tokens"] == 200
         assert summary["total_tokens"] == 140200
         assert summary["model_cost_estimate_cny"] == pytest.approx(0.1124)
         assert summary["usage_complete"] and summary["cost_complete"]

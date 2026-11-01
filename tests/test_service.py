@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.types import Command
 
 from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.schemas.chat import ChatRequest
@@ -87,6 +88,77 @@ def test_only_main_model_text_is_streamed():
     async def check():
         output = [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
         assert [e.get("text") for e in output if e["type"] == "delta"] == ["answer"]
+
+    asyncio.run(check())
+
+
+def test_compaction_commands_keep_only_the_final_reply_and_hide_summary_text():
+    class Graph:
+        async def astream(self, *args, **kwargs):
+            yield (
+                "messages",
+                (
+                    SimpleNamespace(content="INTERNAL_SUMMARY"),
+                    {"langgraph_node": "model", "lc_source": "summarization"},
+                ),
+            )
+            yield (
+                "messages",
+                (
+                    SimpleNamespace(content="先读取文件"),
+                    {"langgraph_node": "model"},
+                ),
+            )
+            yield (
+                "updates",
+                {
+                    "model": [
+                        Command(
+                            update={
+                                "messages": [
+                                    AIMessage(
+                                        content="",
+                                        tool_calls=[
+                                            {"name": "read_file", "id": "read", "args": {}}
+                                        ],
+                                    )
+                                ]
+                            }
+                        )
+                    ]
+                },
+            )
+            yield (
+                "messages",
+                (
+                    SimpleNamespace(content="INTERNAL_RETRY"),
+                    {"langgraph_node": "model", "lc_internal_call": "synthetic-marker"},
+                ),
+            )
+            yield (
+                "messages",
+                (
+                    SimpleNamespace(content="我是个人智能助理。"),
+                    {"langgraph_node": "model"},
+                ),
+            )
+            yield (
+                "updates",
+                {
+                    "model": [
+                        Command(
+                            update={
+                                "messages": [AIMessage(content="我是个人智能助理。")],
+                            }
+                        )
+                    ]
+                },
+            )
+
+    async def check():
+        events = [e async for e in ChatService(Graph(), Settings()).stream(request(), str(uuid4()))]
+        assert [e["text"] for e in events if e["type"] == "delta"] == ["我是个人智能助理。"]
+        assert events[-1]["type"] == "done"
 
     asyncio.run(check())
 

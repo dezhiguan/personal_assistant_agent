@@ -22,7 +22,13 @@ class QwenChatOpenAI(ChatOpenAI):
 def build_model(settings: Settings, *, max_tokens: int = 2048) -> ChatOpenAI:
     if not settings.model_configured:
         raise ValueError("请在服务端 .env 中配置 MODEL_NAME 和 DASHSCOPE_API_KEY。")
-    return QwenChatOpenAI(
+    if settings.context_window_tokens:
+        if settings.context_window_tokens < 4096:
+            raise ValueError("MODEL_CONTEXT_WINDOW_TOKENS 必须为0（关闭）或至少4096。")
+        if not 256 <= settings.context_output_reserve_tokens <= settings.context_window_tokens // 4:
+            raise ValueError("上下文输出预留须至少256 Token，且不超过窗口的25%。")
+        max_tokens = min(max_tokens, settings.context_output_reserve_tokens)
+    model = QwenChatOpenAI(
         model=settings.model_name,
         api_key=settings.api_key,
         base_url=settings.base_url,
@@ -33,3 +39,9 @@ def build_model(settings: Settings, *, max_tokens: int = 2048) -> ChatOpenAI:
         stream_usage=True,
         extra_body={"enable_thinking": False},
     )
+    if settings.context_window_tokens:
+        model.profile = {
+            **(model.profile or {}),
+            "max_input_tokens": settings.context_window_tokens,
+        }
+    return model

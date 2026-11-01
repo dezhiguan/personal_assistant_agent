@@ -159,6 +159,21 @@ BAIDU_HTTP_PROXY=
 
 `MODEL_MAX_OUTPUT_TOKENS` 控制单次输出，默认8192，避免长文件工具参数因2048 token上限被截断；`MODEL_TIMEOUT_SECONDS` 控制单次模型调用的超时；`WORKFLOW_TIMEOUT_SECONDS` 控制整轮工作流，默认1200秒。图执行步骤包含中间件，并不等于工具调用次数，默认 `AGENT_RECURSION_LIMIT=2048`；主代理另设 `AGENT_MAX_MODEL_CALLS=96`、`AGENT_MAX_TOOL_CALLS=256` 防止无界调用。达到上限会明确说明步骤、调用次数或总时限原因；文件操作不会自动回滚，继续前应核对已有成果。停止生成仍会立即取消当前请求。
 
+小窗口模拟可在服务端 `.env` 设置以下配置，重启服务后生效：
+
+```dotenv
+MODEL_CONTEXT_WINDOW_TOKENS=8192
+MODEL_CONTEXT_OUTPUT_RESERVE_TOKENS=2048
+MODEL_CONTEXT_TOOL_NAMES=baidu_search,get_current_time,calculate,validate_time_budget
+```
+
+模拟模式在每次模型调用前估算系统提示词、工具定义、历史消息（包括工具结果）的总 Token 数，达到窗口的75%（8K窗口为6144）时使用 Deep Agents 压缩历史，并把原始历史归档到工作区 `conversation_history/`。保留约1024 Token的近期消息，摘要输出最多512 Token；输入预算为窗口减输出预留（6144），无法压缩到预算内时明确返回 `MODEL_CONTEXT_LIMIT`。主代理和通用子代理均使用此设置。实际云端模型不变，这些数值是框架的本地估算，并非 Qwen 精确分词或云端硬限制；跨请求仍由浏览器回传原始对话，长历史可能再次触发压缩。
+
+读回文件或历史归档时，预览会按系统提示词、工具定义、摘要与其他消息占用后的剩余预算裁剪，并保留原文件路径和分页读取提示；原文件内容不变。模拟预算根据当前实际发送的消息重新估算，不使用压缩前的历史 `usage` 放大压缩后的请求。
+压缩后仍单独保留本轮最后一条用户消息，避免归档摘要中的旧任务覆盖当前问题。
+
+完整工具定义本身会超过小窗口预算，因此模拟模式缩短框架工具说明，并仅启用 `MODEL_CONTEXT_TOOL_NAMES` 列出的业务工具。上述配置保留搜索、时间、计算、时长校验，以及内置文件读写、目录检索、执行、计划和委派，共14个工具；天气、地图、翻译、旅行和日历等业务工具暂不启用。可调整列表，但增加工具会占用历史空间。`MODEL_MAX_OUTPUT_TOKENS` 在模拟模式下还受输出预留值约束（当前最多2048），长文件写入可能需要分段。将 `MODEL_CONTEXT_WINDOW_TOKENS=0` 可关闭模拟、恢复完整工具集和原输出上限；未配置该变量时默认关闭。
+
 ## API
 
 | 路径 | 用途 |

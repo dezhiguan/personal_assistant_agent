@@ -298,6 +298,8 @@ class InvocationCollector(BaseCallbackHandler):
             "tool_calls": len(tools),
             "measured_model_calls": len(measured),
             "usage_complete": len(measured) == len(models),
+            "input_tokens": sum(s["usage"]["input_tokens"] for s in measured),
+            "output_tokens": sum(s["usage"]["output_tokens"] for s in measured),
             "total_tokens": sum(s["usage"]["total_tokens"] for s in measured),
             "model_cost_estimate_cny": sum(e["total_cost_cny"] for e in estimates),
             "model_cost_complete": len(estimates) == len(models),

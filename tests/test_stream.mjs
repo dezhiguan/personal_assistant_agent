@@ -94,6 +94,8 @@ test('timeline upserts completed spans without duplicates and keeps start order'
   assert.equal(message.trace.spans.length, 2);
   assert.deepEqual(message.trace.spans.map(s => s.id), ['model', 'tool']);
   const summary = summarize(message.trace);
+  assert.equal(summary.input_tokens, 100);
+  assert.equal(summary.output_tokens, 20);
   assert.equal(summary.total_tokens, 120);
   assert.equal(summary.model_cost_estimate_cny, 0.00012);
   assert.equal(summary.cost_complete, false);
@@ -109,6 +111,8 @@ test('stopping and restoring interrupted traces never fabricates a measured dura
   assert.equal(message.trace.spans[0].duration_ms, null);
   assert.equal(message.trace.spans[0].status, 'stopped');
   assert.equal(summarize(message.trace).usage_complete, false);
+  assert.equal(summarize(message.trace).input_tokens, null);
+  assert.equal(summarize(message.trace).output_tokens, null);
   assert.equal(summarize(message.trace).model_cost_complete, false);
   const restored = JSON.parse(JSON.stringify(message));
   assert.equal(costLabel(restored.trace.spans[0]), '未知');
@@ -122,6 +126,8 @@ test('server wall duration takes precedence over browser receipt or overlapping 
   endTrace(message, 'complete');
   assert.equal(message.trace.elapsed, 1234);
   assert.equal(summarize(message.trace).total_tokens, 321);
+  assert.equal(summarize(message.trace).input_tokens, null);
+  assert.equal(summarize(message.trace).output_tokens, null);
   assert.equal(duration(null), '未知');
   assert.equal(duration(1234), '1.23 秒');
 });

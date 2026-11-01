@@ -1,7 +1,7 @@
 import { getStatus, streamChat } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { latestTodos, normalizeTodos, renderPlan } from './planning.js';
-import { TimelinePanel, applyTraceEvent, beginTrace, elapsed, endTrace } from './timeline.js';
+import { TimelinePanel, applyTraceEvent, beginTrace, elapsed, endTrace } from './timeline.js?v=2';
 
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'yiyu.assistant.v2';
