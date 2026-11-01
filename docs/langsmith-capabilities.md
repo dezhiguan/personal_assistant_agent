@@ -48,7 +48,15 @@ Qwen 传输开启 `stream_usage=True`，计数使用供应商响应的 usage，�
 
 LangSmith LLM span 写入 usage 和费用估算元数据；工作区价格表注册对应的 Token 单价、缓存单价和上下文分层，使原生 Input / Output / Total Cost 可以显示和汇总。价格表仅匹配 `qwen-plus` 与自定义追踪 provider `dashscope-beijing-nonthinking`，实际请求仍直接发往百炼，不改变模型身份或请求协议。
 
-价格快照位于 `observability/qwen_pricing.json`：北京地域 qwen-plus 非思考模式，核对日期 2026-10-28；按输入长度分为 ≤128000、≤256000、≤1000000 Token。其他模型或地域不会套用该估算。USD 使用文件中 ECB 2026-10-27 的汇率快照，人民币值一并保留。费用是公开标价估算，不包含免费额度、折扣或实际账单调整。更新价格或汇率快照后，重新执行 `sync_pricing.py`；LangSmith 不回溯重算旧追踪。
+价格快照位于 `observability/qwen_pricing.json`（北京地域 qwen-plus 非思考模式，2026-10-28 核验）和 `observability/qwen_flash_pricing.json`（北京地域 qwen3.8-flash，2026-11-01 核验）。qwen-plus 按每次输入长度分为 ≤128000、≤256000、≤1000000 Token；qwen3.8-flash 输入/缓存命中/输出分别为 0.8/0.1/2.7 元每百万 Token，来源为[官方模型页](https://help.aliyun.com/zh/model-studio/qwen3-8-flash)。其他模型或地域不会套用这些估算。USD 使用文件中 ECB 2026-10-27 的汇率快照，页面以人民币展示。费用是公开标价估算，不包含免费额度、折扣、基础设施或实际账单调整。`CostTracer` 在每个模型叶节点写入对应估算；现有 `sync_pricing.py` 仅同步 qwen-plus 价格映射，LangSmith 不回溯重算旧追踪。
+
+### 页面调用链路
+
+右侧时间线通过请求范围的 LangChain 回调采集模型和工具开始/结束事件，含子代理内部调用。子调用归属优先使用回调父链；LangSmith 原生中间件未发送 LangChain 回调时，使用当前原生追踪的祖先 ID 补足归属，不按时间重叠猜测。`trace` 事件中的 `sequence` 按实际开始时间排序；同一 `id` 的结束事件更新原条目。耗时使用服务端单调时钟测量，包含传输、等待及同一次模型调用内的重试；属于调用层耗时，不是服务商 GPU 运算时间。总耗时为整轮请求的实际时间，不能将并行条目相加。模型原始提示词和推理内容不会发送到页面；工具仅展示受限的脱敏预览，文件/执行/子代理工具省略原始内容。
+
+Token 来自接口 `usage_metadata`，缺失时显示未知。模型费用按各次调用自己的 Token、缓存用量和阶梯分别计算后汇总。工具账单尚未接入：已知本地工具仅注明“无外部 API 费用”（不包含服务器成本）；外部工具标记未知；task 内部调用分别计入汇总，父调用不重复收费。机票、酒店、汇率等业务数据不代表 API 调用费用。有缺项时汇总显示“已知成本 · 估算，不完整”。停止或连接中断后，未收到的 Token、费用与结束耗时不能补造。历史链路随对话保存在当前浏览器，旧记录不回填估算。
+
+可使用 `uv run python scripts/verify_timeline.py --base-url http://127.0.0.1:8000` 运行真实付费验收，覆盖直接回答、多工具、子代理和缺配置工具失败。脚本核对原始事件与 LangSmith 同 ID 叶节点的 Token 和耗时，并复核费用公式；结果写入忽略的 `artifacts/timeline/live/`。该检查不验证账单实扣。网络不可用、服务未重启或追踪不完整都算验收失败。
 
 `verify_usage.py` 实际运行一轮聊天，然后回读 LangSmith，检查供应商计数、各 LLM span 和根追踪汇总，核对 Input / Output / Total Cost。允许价格存储舍入误差（相对 1e-5、绝对 1e-9）；缺字段、少调用或金额不符均失败。报告保存在 `artifacts/usage/latest.json`，完整事件保存在同目录 `latest-events.json`，均被 Git / Docker 忽略。
 

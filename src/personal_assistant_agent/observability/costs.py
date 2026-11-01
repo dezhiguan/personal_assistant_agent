@@ -9,20 +9,20 @@ from urllib.parse import urlparse
 from personal_assistant_agent.core.config import Settings
 
 PRICING = json.loads(Path(__file__).with_name("qwen_pricing.json").read_text())
+FLASH_PRICING = json.loads(Path(__file__).with_name("qwen_flash_pricing.json").read_text())
+PRICE_TABLES = {p["model"]: p for p in (PRICING, FLASH_PRICING)}
 MILLION = Decimal(1000000)
 
 
 def estimate_cost(usage: dict, settings: Settings) -> dict | None:
-    if (
-        settings.model_name != PRICING["model"]
-        or urlparse(settings.base_url).hostname != PRICING["base_url_host"]
-    ):
+    pricing = PRICE_TABLES.get(settings.model_name)
+    if pricing is None or urlparse(settings.base_url).hostname != pricing["base_url_host"]:
         return None
     inputs, outputs = int(usage.get("input_tokens", 0)), int(usage.get("output_tokens", 0))
     cached = int(usage.get("input_token_details", {}).get("cache_read", 0))
     if min(inputs, outputs, cached) < 0 or cached > inputs:
         raise ValueError("Invalid token usage")
-    tier = next((t for t in PRICING["tiers"] if inputs <= t["max_input_tokens"]), None)
+    tier = next((t for t in pricing["tiers"] if inputs <= t["max_input_tokens"]), None)
     if tier is None:
         return None
     input_cny = (
@@ -30,7 +30,7 @@ def estimate_cost(usage: dict, settings: Settings) -> dict | None:
         + cached * Decimal(tier["cache_read_per_million"])
     ) / MILLION
     output_cny = outputs * Decimal(tier["output_per_million"]) / MILLION
-    fx = Decimal(PRICING["fx"]["CNY_per_USD"])
+    fx = Decimal(pricing["fx"]["CNY_per_USD"])
     return {
         "input_cost_cny": float(input_cny),
         "output_cost_cny": float(output_cny),
@@ -39,9 +39,12 @@ def estimate_cost(usage: dict, settings: Settings) -> dict | None:
         "output_cost": float(output_cny / fx),
         "total_cost": float((input_cny + output_cny) / fx),
         "cost_is_estimate": True,
-        "pricing_verified_on": PRICING["verified_on"],
-        "pricing_source": PRICING["source"],
-        "fx_date": PRICING["fx"]["date"],
+        "pricing_verified_on": pricing["verified_on"],
+        "pricing_source": pricing["source"],
+        "input_per_million_cny": tier["input_per_million"],
+        "cache_read_per_million_cny": tier["cache_read_per_million"],
+        "output_per_million_cny": tier["output_per_million"],
+        "fx_date": pricing["fx"]["date"],
         "cny_per_usd": str(fx),
     }
 

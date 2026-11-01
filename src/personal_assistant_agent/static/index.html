@@ -6,7 +6,7 @@
   <meta name="color-scheme" content="light">
   <title>个人智能助理</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23272a30'/%3E%3Cpath d='M8 18V8h10M14 24h10V14M8 24 24 8' fill='none' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/css/app.css?v=11">
+  <link rel="stylesheet" href="/static/css/app.css?v=13">
 </head>
 <body>
   <svg class="icon-definitions" aria-hidden="true"><defs>
@@ -23,7 +23,7 @@
     <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
   </defs></svg>
 
-  <div class="app" id="app">
+  <div class="app trace-collapsed" id="app">
     <button class="mobile-shade" id="shade" aria-label="关闭侧边栏" tabindex="-1"></button>
     <aside class="sidebar" aria-label="对话导航">
       <div class="brand">
@@ -48,6 +48,9 @@
     </aside>
 
     <main class="workspace">
+      <button class="trace-toggle" id="trace-toggle" aria-controls="trace-panel" aria-expanded="false">
+        <svg aria-hidden="true"><use href="#i-list"/></svg>调用链路
+      </button>
       <button class="menu-toggle" id="menu-toggle" aria-label="打开导航" aria-expanded="false">
         <svg aria-hidden="true"><use href="#i-menu"/></svg>
       </button>
@@ -90,8 +93,18 @@
         </div>
       </section>
     </main>
+    <button class="trace-shade" id="trace-shade" aria-label="关闭调用链路" tabindex="-1"></button>
+    <aside class="trace-panel" id="trace-panel" aria-label="调用链路">
+      <header class="trace-header">
+        <div><h2>调用链路</h2><span id="trace-status" role="status">等待提问</span></div>
+        <button id="trace-close" aria-label="收起调用链路" title="收起调用链路">×</button>
+      </header>
+      <div class="trace-turn-wrap"><label class="sr-only" for="trace-turn">选择对话轮次</label><select id="trace-turn" hidden></select></div>
+      <div class="trace-content" id="trace-content"></div>
+      <footer class="trace-footnote">结束耗时为服务端实测，包含等待与重试；执行中为浏览器动态计时。并行耗时不相加。模型成本按官方单价估算，非账单实扣；工具费用未知时单列。</footer>
+    </aside>
   </div>
   <div class="toast" id="toast" role="status" hidden></div>
-  <script type="module" src="/static/js/app.js?v=9"></script>
+  <script type="module" src="/static/js/app.js?v=11"></script>
 </body>
 </html>

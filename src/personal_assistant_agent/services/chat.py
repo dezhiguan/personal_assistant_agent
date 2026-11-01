@@ -10,7 +10,6 @@ from uuid import UUID
 
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.messages.ai import add_usage
 from langgraph.errors import GraphRecursionError
@@ -20,6 +19,7 @@ from pydantic import TypeAdapter
 
 from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.observability.costs import estimate_calls
+from personal_assistant_agent.observability.timeline import InvocationCollector, measured_stream
 from personal_assistant_agent.observability.tracer import CostTracer
 from personal_assistant_agent.schemas.chat import ChatRequest, TodoList, ToolProgress
 from personal_assistant_agent.services.plan_edits import explicit_edit
@@ -38,29 +38,6 @@ def _tool_failed(message: ToolMessage) -> bool:
         except ValueError:
             pass
     return False
-
-
-class _ModelUsageCollector(BaseCallbackHandler):
-    """Collect final usage from every model call, including nested task agents.
-
-    Nested agent chunks are intentionally absent from the public message stream.
-    Callback inheritance still provides their measured usage without exposing text.
-    """
-
-    run_inline = True
-
-    def __init__(self):
-        self.calls: dict[str, dict] = {}
-
-    def on_llm_end(self, response, *, run_id, **kwargs):
-        usage = None
-        for generations in response.generations:
-            for generation in generations:
-                metadata = getattr(getattr(generation, "message", None), "usage_metadata", None)
-                if metadata:
-                    usage = add_usage(usage, metadata)
-        if usage:
-            self.calls[str(run_id)] = usage
 
 
 def public_error(error: Exception) -> tuple[str, str]:
@@ -106,7 +83,8 @@ class ChatService:
         )
 
     async def stream(self, payload: ChatRequest, request_id: str) -> AsyncIterator[dict]:
-        usage_collector = _ModelUsageCollector()
+        queue = asyncio.Queue()
+        usage_collector = InvocationCollector(self.settings, queue)
         callbacks = (
             [
                 CostTracer(
@@ -150,6 +128,8 @@ class ChatService:
             "request_id": request_id,
             "model": self.settings.model_name,
             "tracing_enabled": self.settings.tracing_configured,
+            "started_at": usage_collector.started_at,
+            "timeline_version": 1,
         }
         received_text = False
         buffered_text = ""
@@ -164,7 +144,11 @@ class ChatService:
             yield {"type": "plan", "todos": todos}
             if acknowledgement:
                 yield {"type": "delta", "text": acknowledgement}
-                yield {"type": "done", "request_id": request_id}
+                yield {
+                    "type": "done",
+                    "request_id": request_id,
+                    "trace_summary": usage_collector.summary(),
+                }
                 return
         tool_calls: dict[str, str] = {}
         try:
@@ -172,14 +156,18 @@ class ChatService:
                 # A workflow makes several model calls; each call already has
                 # its own request_timeout enforced by the model transport.
                 async with asyncio.timeout(self.settings.workflow_timeout):
-                    async for mode, data in self.agent.astream(
+                    source = self.agent.astream(
                         {
                             "messages": [m.model_dump() for m in payload.messages],
                             "todos": todos,
                         },
                         config=config,
                         stream_mode=["messages", "updates"],
-                    ):
+                    )
+                    async for mode, data in measured_stream(source, queue):
+                        if mode == "trace":
+                            yield data
+                            continue
                         if mode == "updates":
                             for update in data.values():
                                 if not isinstance(update, dict):
@@ -260,16 +248,34 @@ class ChatService:
                 for measured in call_usage.values():
                     usage = add_usage(usage, measured)
             if usage:
+                cost_estimate = estimate_calls(call_usage.values(), self.settings)
+                model_spans = [s for s in usage_collector.spans.values() if s["kind"] == "model"]
+                if any(
+                    s["name"] != self.settings.model_name or s.get("usage") is None
+                    for s in model_spans
+                ):
+                    # The legacy usage estimate assumes one model. The timeline
+                    # prices actual models individually and flags missing usage.
+                    cost_estimate = None
                 yield {
                     "type": "usage",
                     **usage,
-                    "cost_estimate": estimate_calls(call_usage.values(), self.settings),
+                    "cost_estimate": cost_estimate,
                 }
-            yield {"type": "done", "request_id": request_id}
+            yield {
+                "type": "done",
+                "request_id": request_id,
+                "trace_summary": usage_collector.summary(),
+            }
         except asyncio.CancelledError:
             logger.info("Chat cancelled request_id=%s", request_id)
             raise
         except Exception as error:
+            usage_collector.close_open_spans("error")
+            while not queue.empty():
+                mode, data = queue.get_nowait()
+                if mode == "trace":
+                    yield data
             code, message = public_error(error)
             logger.warning(
                 "Chat failed request_id=%s code=%s error_type=%s",
@@ -279,7 +285,13 @@ class ChatService:
             )
             for call_id, name in tool_calls.items():
                 yield ToolProgress(name=name, call_id=call_id, status="error").model_dump()
-            yield {"type": "error", "code": code, "message": message, "request_id": request_id}
+            yield {
+                "type": "error",
+                "code": code,
+                "message": message,
+                "request_id": request_id,
+                "trace_summary": usage_collector.summary(),
+            }
 
     async def close(self) -> None:
         if self.trace_client:

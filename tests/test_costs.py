@@ -56,6 +56,18 @@ def test_invalid_cache_counts_rejected():
         estimate_cost({"input_tokens": 1, "input_token_details": {"cache_read": 2}}, Settings())
 
 
+def test_flash_uses_verified_flash_rates_including_its_own_cache_rate():
+    result = estimate_cost(
+        {"input_tokens": 1000, "output_tokens": 500, "input_token_details": {"cache_read": 200}},
+        Settings(model_name="qwen3.8-flash"),
+    )
+    assert result["input_cost_cny"] == pytest.approx(0.00066)
+    assert result["output_cost_cny"] == pytest.approx(0.00135)
+    assert result["total_cost_cny"] == pytest.approx(0.00201)
+    assert result["pricing_source"].endswith("qwen3-8-flash")
+    assert result["cost_is_estimate"] is True
+
+
 def test_tracer_preserves_settings_when_framework_copies_it():
     client = Client(api_key="unit-test-only")
     try:

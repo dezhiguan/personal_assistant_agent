@@ -254,6 +254,21 @@ def test_streamed_task_reports_progress_without_subagent_text(tmp_path, monkeypa
     usage = next(e for e in output if e["type"] == "usage")
     assert usage["total_tokens"] == 44  # Two main calls plus two child calls.
     assert usage["cost_estimate"]["model_calls"] == 4
+    spans = {e["span"]["id"]: e["span"] for e in output if e["type"] == "trace"}
+    assert [s["kind"] for s in spans.values()] == [
+        "model",
+        "tool",
+        "model",
+        "tool",
+        "model",
+        "model",
+    ]
+    parent = next(s for s in spans.values() if s["name"] == "task")
+    nested = [s for s in spans.values() if s.get("parent_tool_id") == parent["id"]]
+    assert len(nested) == 3  # Two child models and the actual calculate call.
+    assert all(s["status"] == "finished" and s["duration_ms"] >= 0 for s in spans.values())
+    assert output[-1]["trace_summary"]["total_tokens"] == 44
+    assert output[-1]["trace_summary"]["model_calls"] == 4
 
 
 def test_actual_graph_creates_revises_and_completes_plan_through_service():

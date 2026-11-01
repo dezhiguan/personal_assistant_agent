@@ -1,6 +1,7 @@
 import { getStatus, streamChat } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { latestTodos, normalizeTodos, renderPlan } from './planning.js';
+import { TimelinePanel, applyTraceEvent, beginTrace, elapsed, endTrace } from './timeline.js';
 
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = 'yiyu.assistant.v2';
@@ -9,6 +10,28 @@ let currentId = null;
 let job = null;
 let toastTimer;
 let tracingEnabled = false;
+const timeline = new TimelinePanel();
+
+function showTimeline() {
+  $('app').classList.remove('trace-collapsed');
+  $('app').classList.add('trace-open');
+  $('trace-toggle').setAttribute('aria-expanded', 'true');
+}
+
+function hideTimeline() {
+  $('app').classList.add('trace-collapsed');
+  $('app').classList.remove('trace-open');
+  $('trace-toggle').setAttribute('aria-expanded', 'false');
+}
+
+const wideTimeline = window.matchMedia('(min-width: 1200px)');
+function updateTimelineExpanded() {
+  const open = wideTimeline.matches ? !$('app').classList.contains('trace-collapsed')
+    : $('app').classList.contains('trace-open');
+  $('trace-toggle').setAttribute('aria-expanded', String(open));
+}
+wideTimeline.addEventListener('change', updateTimelineExpanded);
+updateTimelineExpanded();
 
 function toast(text) {
   clearTimeout(toastTimer);
@@ -26,6 +49,7 @@ function loadHistory() {
       .map(s => ({ ...s, messages: s.messages.filter(m => m && ['user', 'assistant'].includes(m.role) && typeof m.text === 'string').map(m => {
         const text = m.role === 'assistant' ? m.text.replaceAll('一隅', '个人智能助理') : m.text;
         renamed ||= text !== m.text;
+        if (m.trace?.state === 'running') endTrace(m, 'stopped');
         return { ...m, text, ...(Array.isArray(m.todos) ? { todos: normalizeTodos(m.todos) } : {}), state: m.state === 'streaming' ? 'stopped' : m.state };
       }) }));
     currentId = sessions.some(s => s.id === saved.currentId) ? saved.currentId : null;
@@ -91,7 +115,12 @@ function renderHistory() {
   }
 }
 
-function thinking() {
+function thinkingTime(message) {
+  const ms = message.trace ? elapsed(message.trace) : null;
+  return Number.isFinite(ms) ? `已等待 ${(ms / 1000).toFixed(1)} 秒` : '';
+}
+
+function thinking(message) {
   const wrapper = document.createElement('div');
   wrapper.className = 'thinking';
   wrapper.setAttribute('role', 'status');
@@ -100,8 +129,31 @@ function thinking() {
   const label = document.createElement('span');
   label.className = 'pending-label';
   label.textContent = '正在思考…';
-  wrapper.append(label);
+  const timer = document.createElement('span');
+  timer.className = 'thinking-time';
+  timer.setAttribute('role', 'timer');
+  timer.setAttribute('aria-live', 'off');
+  timer.textContent = thinkingTime(message);
+  wrapper.append(label, timer);
   return wrapper;
+}
+
+function renderMessageTiming(row, message) {
+  if (message.state === 'streaming' || !message.trace) return;
+  const measured = message.trace.summary?.duration_ms;
+  const ms = Number.isFinite(measured) ? measured : elapsed(message.trace);
+  if (!Number.isFinite(ms) || ms < 0) return;
+  const timing = document.createElement('div');
+  timing.className = 'message-state message-timing';
+  timing.dataset.durationMs = String(ms);
+  timing.dataset.source = Number.isFinite(measured) ? 'server' : 'browser';
+  timing.textContent = Number.isFinite(measured)
+    ? `本轮耗时 ${(ms / 1000).toFixed(2)} 秒`
+    : `已等待 ${(ms / 1000).toFixed(2)} 秒（浏览器计时）`;
+  timing.title = Number.isFinite(measured)
+    ? '服务端实测，包含模型、工具调用及等待时间。'
+    : '未收到服务端最终耗时，显示浏览器实际等待时间。';
+  row.append(timing);
 }
 
 function renderAssistant(row, message, session) {
@@ -117,7 +169,7 @@ function renderAssistant(row, message, session) {
   plan.className = 'task-plan';
   plan.setAttribute('aria-label', '任务计划');
   renderPlan(plan, message);
-  if (!message.text && message.state === 'streaming') body.append(thinking());
+  if (!message.text && message.state === 'streaming') body.append(thinking(message));
   else renderMarkdown(body, message.text);
   row.append(heading, plan, body);
   if (message.toolProgress && message.state === 'streaming') {
@@ -156,8 +208,9 @@ function renderAssistant(row, message, session) {
     }
     row.append(error);
   }
-  const hasTrace = tracingEnabled && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(message.requestId || '');
-  if ((message.text || hasTrace) && message.state !== 'streaming') {
+  renderMessageTiming(row, message);
+  const hasTrace = (message.tracingEnabled ?? tracingEnabled) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(message.requestId || '');
+  if ((message.text || hasTrace || message.trace) && message.state !== 'streaming') {
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     if (message.text) {
@@ -179,12 +232,20 @@ function renderAssistant(row, message, session) {
       trace.append(icon('external'), document.createTextNode('LangSmith 追踪'));
       actions.append(trace);
     }
+    if (message.trace) {
+      const button = document.createElement('button');
+      button.className = 'copy';
+      button.textContent = '查看调用链路';
+      button.addEventListener('click', () => { timeline.select(session, message); showTimeline(); });
+      actions.append(button);
+    }
     row.append(actions);
   }
 }
 
 function renderMessages() {
   const session = activeSession();
+  timeline.render(session);
   const hasMessages = !!session?.messages.length;
   $('welcome').hidden = hasMessages;
   $('messages').hidden = !hasMessages;
@@ -240,10 +301,13 @@ function updateSend() {
 
 function finish(running) {
   if (job !== running) return;
+  clearInterval(running.thinkingTimer);
   job = null;
+  endTrace(running.message, running.message.state);
   persist();
   updateSend();
   if (currentId === running.session.id) {
+    timeline.render(running.session);
     const row = document.querySelector(`[data-message-id="${running.message.id}"]`);
     if (row) renderAssistant(row, running.message, running.session);
   }
@@ -261,8 +325,16 @@ function stopGeneration() {
 async function runConversation(session, message) {
   const todos = latestTodos(session.messages, message);
   message.todos = todos;
+  const question = session.messages.slice(0, session.messages.indexOf(message)).findLast(m => m.role === 'user')?.text || '';
+  beginTrace(message, question);
+  timeline.select(session, message);
   const running = { session, message, controller: new AbortController(), cancelled: false };
   job = running;
+  running.thinkingTimer = setInterval(() => {
+    if (job !== running || currentId !== session.id) return;
+    const timer = document.querySelector(`[data-message-id="${message.id}"] .thinking-time`);
+    if (timer) timer.textContent = thinkingTime(message);
+  }, 200);
   renderMessages();
   updateSend();
   persist();
@@ -276,8 +348,16 @@ async function runConversation(session, message) {
     let done = false;
     for await (const event of streamChat({ conversation_id: session.id, messages, todos }, running.controller.signal)) {
       if (running.cancelled || job !== running) return;
+      applyTraceEvent(message, event);
       if (event.type === 'meta') {
         message.requestId = event.request_id;
+        message.tracingEnabled = !!event.tracing_enabled;
+        timeline.render(session);
+      } else if (event.type === 'trace') {
+        timeline.render(session);
+        persist();
+      } else if (event.type === 'usage') {
+        message.usage = event;
       } else if (event.type === 'plan') {
         const viewport = $('chat-scroll');
         const nearBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 100;
@@ -325,6 +405,7 @@ function retryMessage(session, message) {
   message.requestId = null;
   delete message.todos;
   delete message.toolProgress;
+  delete message.usage;
   runConversation(session, message);
 }
 
@@ -395,6 +476,14 @@ $('menu-toggle').addEventListener('click', () => {
 });
 $('shade').addEventListener('click', closeMenu);
 document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
+$('trace-toggle').addEventListener('click', () => {
+  const visible = window.matchMedia('(min-width: 1200px)').matches
+    ? !$('app').classList.contains('trace-collapsed') : $('app').classList.contains('trace-open');
+  if (visible) hideTimeline(); else showTimeline();
+});
+$('trace-close').addEventListener('click', hideTimeline);
+$('trace-shade').addEventListener('click', hideTimeline);
+document.addEventListener('keydown', event => { if (event.key === 'Escape') hideTimeline(); });
 $('clear-history').addEventListener('click', () => {
   if (!sessions.length) { toast('还没有本机对话记录'); return; }
   if (!confirm('清空此浏览器内的对话记录？此操作无法撤销。')) return;
