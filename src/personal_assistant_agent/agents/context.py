@@ -7,9 +7,19 @@ from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     compute_summarization_defaults,
 )
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.exceptions import ContextOverflowError
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage, get_buffer_string
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.runnables import RunnableLambda
 from langchain_core.utils.function_calling import convert_to_openai_tool
+
+from personal_assistant_agent.agents.token_budget import PROTOCOL_MARGIN
+from personal_assistant_agent.agents.tool_policy import (
+    cached_read,
+    selected_tools,
+    standalone_question,
+    tool_name,
+)
 
 # Remove verbose framework tutorials, retaining the contracts needed to call tools.
 COMPACT_DESCRIPTIONS = {
@@ -58,7 +68,38 @@ def compact_tools(tools):
         name = function.get("name")
         if name in COMPACT_DESCRIPTIONS:
             function["description"] = COMPACT_DESCRIPTIONS[name]
+            function["parameters"] = _compact_schema(function.get("parameters", {}))
         result.append(schema)
+    return result
+
+
+def _compact_schema(schema):
+    """Drop schema documentation, preserving argument names, constraints and literal defaults."""
+    if isinstance(schema, list):
+        return [_compact_schema(item) for item in schema]
+    if not isinstance(schema, dict):
+        return schema
+    result = {}
+    for key, value in schema.items():
+        if key in {"title", "description", "examples"}:
+            continue
+        if key in {"properties", "$defs", "definitions", "dependentSchemas"}:
+            result[key] = {name: _compact_schema(child) for name, child in value.items()}
+        elif key in {
+            "items",
+            "prefixItems",
+            "anyOf",
+            "allOf",
+            "oneOf",
+            "additionalProperties",
+            "not",
+            "if",
+            "then",
+            "else",
+        }:
+            result[key] = _compact_schema(value)
+        else:
+            result[key] = value
     return result
 
 
@@ -66,7 +107,7 @@ class ContextWindowMiddleware(SummarizationMiddleware):
     """Count the actual compact tools, system prompt and history before every call.
 
     Inherit history archiving, summary state, tool-call pairing and overflow recovery.
-    The budget is estimated by the framework's token counter, not Qwen's tokenizer.
+    Local estimates guide compaction; provider counts gate the actual transport.
     """
 
     def __init__(self, model, backend, settings):
@@ -83,23 +124,66 @@ class ContextWindowMiddleware(SummarizationMiddleware):
                 trim_tokens_to_summarize=None,
             )
             return
+        self.summary_model = model.model_copy(update={"max_tokens": min(384, self.output_reserve)})
         super().__init__(
             model=model,
             backend=backend,
             trigger=("tokens", self.window * 3 // 4),
-            keep=("tokens", self.window // 8),
+            keep=("tokens", self.window // 16),
             trim_tokens_to_summarize=self.window - self.output_reserve - 2048,
-            summarizer=model.model_copy(update={"max_tokens": min(512, self.output_reserve)}),
+            summarizer=RunnableLambda(self._summarize, afunc=self._asummarize),
             summary_prompt=HISTORY_SUMMARY_PROMPT,
             # Historical usage describes the previous packet, not the smaller
             # packet reconstructed after compaction or tool-result clipping.
             token_counter=partial(count_tokens_approximately, use_usage_metadata_scaling=False),
         )
 
+    def _summary_steps(self, messages):
+        """Fit the summary's own prompt too; excluded history remains in its archive."""
+        text = get_buffer_string(messages)
+        limit = self.window - self.summary_model.max_tokens - PROTOCOL_MARGIN
+        omitted = False
+        while True:
+            prefix = "[Older text omitted; full history is archived.]\n" if omitted else ""
+            packet = [HumanMessage(content=HISTORY_SUMMARY_PROMPT.format(messages=prefix + text))]
+            count = yield packet
+            if count <= limit:
+                return packet
+            if not text:
+                raise ContextOverflowError("摘要提示词超过模拟窗口。")
+            raw = text.encode("utf-8")
+            retain = min(len(raw) - 1, int(len(raw) * limit / count * 0.8))
+            text = raw[-retain:].decode("utf-8", errors="ignore") if retain > 0 else ""
+            omitted = True
+
+    def _summarize(self, messages, config):
+        steps = self._summary_steps(messages)
+        packet = next(steps)
+        while True:
+            count = self.summary_model.count_input_tokens(packet)
+            try:
+                packet = steps.send(count)
+            except StopIteration as result:
+                return self.summary_model.invoke(result.value, config=config).text.strip()
+
+    async def _asummarize(self, messages, config):
+        steps = self._summary_steps(messages)
+        packet = next(steps)
+        while True:
+            count = await self.summary_model.acount_input_tokens(packet)
+            try:
+                packet = steps.send(count)
+            except StopIteration as result:
+                return (await self.summary_model.ainvoke(result.value, config=config)).text.strip()
+
     def _input_budget(self, request):
         # The explicit reserve already supplies headroom; do not subtract the
         # framework's additional 5%, which would trigger before the requested 6K.
-        return self.window - self.output_reserve if self.window else super()._input_budget(request)
+        return (
+            self.window - self.output_reserve - PROTOCOL_MARGIN
+            if self.window
+            else super()._input_budget(request)
+        )
 
     def _should_summarize(self, messages, total_tokens):
         if self.window:
@@ -198,27 +282,186 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         request, clipped = self._fit_read_results(request)
         if clipped and kwargs.get("rejected") is None:
             kwargs["rejected"] = original
-        response, replacements = super()._call_with_budget(request, handler, **kwargs)
-        return response, [*clipped, *replacements]
+        fitted = []
+
+        def checked(candidate):
+            candidate, updates = self._fit_provider(candidate)
+            fitted.extend(updates)
+            return handler(candidate)
+
+        response, replacements = super()._call_with_budget(request, checked, **kwargs)
+        return response, [*clipped, *fitted, *replacements]
 
     async def _acall_with_budget(self, request, handler, **kwargs):
         original = request
         request, clipped = self._fit_read_results(request)
         if clipped and kwargs.get("rejected") is None:
             kwargs["rejected"] = original
-        response, replacements = await super()._acall_with_budget(request, handler, **kwargs)
-        return response, [*clipped, *replacements]
+        fitted = []
+
+        async def checked(candidate):
+            candidate, updates = await self._afit_provider(candidate)
+            fitted.extend(updates)
+            return await handler(candidate)
+
+        response, replacements = await super()._acall_with_budget(request, checked, **kwargs)
+        return response, [*clipped, *fitted, *replacements]
+
+    @staticmethod
+    def _count_args(request):
+        messages = (
+            [request.system_message, *request.messages]
+            if request.system_message
+            else request.messages
+        )
+        return messages, {**request.model_settings, "tools": request.tools}
+
+    def _provider_fit_steps(self, request):
+        """Count complete packets; use byte-bounded previews after measuring free space."""
+        count = yield request
+        limit = self._input_budget(request)
+        if count <= limit:
+            return request, []
+        calls = {
+            c["id"]: c for m in request.messages if isinstance(m, AIMessage) for c in m.tool_calls
+        }
+        messages, replacements = list(request.messages), []
+        results = sorted(
+            (
+                (i, m)
+                for i, m in enumerate(messages)
+                if isinstance(m, ToolMessage) and isinstance(m.content, str)
+            ),
+            key=lambda item: len(item[1].content),
+            reverse=True,
+        )
+        for index, message in results:
+            call = calls.get(message.tool_call_id, {})
+            path = call.get("args", {}).get("file_path")
+            if call.get("name") != "read_file" or not isinstance(path, str) or not path:
+                continue
+            notice = (
+                f"\n[Context preview truncated. Full file: {path}. "
+                "Read specific lines with offset/limit.]"
+            )
+            stub = message.model_copy(update={"content": notice})
+            messages[index] = stub
+            stub_count = yield request.override(messages=list(messages))
+            if stub_count > limit:
+                replacements.append(stub)
+                continue
+            room = max(0, limit - stub_count - 32)
+            preview = message.content.encode("utf-8")[:room].decode("utf-8", errors="ignore")
+            replacement = message.model_copy(update={"content": preview + notice})
+            messages[index] = replacement
+            candidate = request.override(messages=list(messages))
+            fitted_count = yield candidate
+            if fitted_count > limit:
+                messages[index] = replacement = stub
+                candidate = request.override(messages=list(messages))
+            replacements.append(replacement)
+            return candidate, replacements
+        raise ContextOverflowError("提示词、工具定义和当前输入仍超过实际 Token 预算。")
+
+    def _fit_provider(self, request):
+        if not self.window:
+            return request, []
+        steps = self._provider_fit_steps(request)
+        candidate = next(steps)
+        while True:
+            messages, kwargs = self._count_args(candidate)
+            count = request.model.count_input_tokens(messages, **kwargs)
+            try:
+                candidate = steps.send(count)
+            except StopIteration as result:
+                return result.value
+
+    async def _afit_provider(self, request):
+        if not self.window:
+            return request, []
+        steps = self._provider_fit_steps(request)
+        candidate = next(steps)
+        while True:
+            messages, kwargs = self._count_args(candidate)
+            count = await request.model.acount_input_tokens(messages, **kwargs)
+            try:
+                candidate = steps.send(count)
+            except StopIteration as result:
+                return result.value
 
     def wrap_model_call(self, request, handler):
         if not self.window:
             return super().wrap_model_call(request, handler)
-        return super().wrap_model_call(
-            request.override(tools=compact_tools(request.tools)), handler
+
+        def checked(candidate):
+            messages, kwargs = self._count_args(candidate)
+            if candidate.model.count_input_tokens(messages, **kwargs) > self._input_budget(
+                candidate
+            ):
+                raise ContextOverflowError("完整请求超过服务端 Token 预算，需先压缩。")
+            return handler(candidate)
+
+        request = request.override(
+            tools=compact_tools(selected_tools(request.messages, request.tools))
         )
+        latest = self._latest_user(request.messages)
+        if latest and standalone_question(str(latest.content)):
+            response, replacements = self._call_with_budget(
+                request.override(messages=[latest]), checked
+            )
+            return self._with_replacements(response, replacements)
+        return super().wrap_model_call(request, checked)
 
     async def awrap_model_call(self, request, handler):
         if not self.window:
             return await super().awrap_model_call(request, handler)
-        return await super().awrap_model_call(
-            request.override(tools=compact_tools(request.tools)), handler
+
+        async def checked(candidate):
+            messages, kwargs = self._count_args(candidate)
+            count = await candidate.model.acount_input_tokens(messages, **kwargs)
+            if count > self._input_budget(candidate):
+                raise ContextOverflowError("完整请求超过服务端 Token 预算，需先压缩。")
+            return await handler(candidate)
+
+        request = request.override(
+            tools=compact_tools(selected_tools(request.messages, request.tools))
         )
+        latest = self._latest_user(request.messages)
+        if latest and standalone_question(str(latest.content)):
+            response, replacements = await self._acall_with_budget(
+                request.override(messages=[latest]), checked
+            )
+            return self._with_replacements(response, replacements)
+        return await super().awrap_model_call(request, checked)
+
+    def _tool_override(self, request):
+        if not self.window or request.tool is None:
+            return None
+        allowed = {tool_name(t) for t in selected_tools(request.state["messages"], [request.tool])}
+        call = request.tool_call
+        if call["name"] not in allowed:
+            return ToolMessage(
+                content="当前请求未授权执行此工具，请基于已有信息回答。",
+                tool_call_id=call["id"],
+                name=call["name"],
+                status="error",
+            )
+        if (previous := cached_read(request.state["messages"], call)) is not None:
+            return previous.model_copy(
+                update={
+                    "id": None,
+                    "tool_call_id": call["id"],
+                    "additional_kwargs": {
+                        **previous.additional_kwargs,
+                        "assistant_cached_tool": True,
+                    },
+                }
+            )
+        return None
+
+    def wrap_tool_call(self, request, handler):
+        return self._tool_override(request) or handler(request)
+
+    async def awrap_tool_call(self, request, handler):
+        override = self._tool_override(request)
+        return override if override is not None else await handler(request)

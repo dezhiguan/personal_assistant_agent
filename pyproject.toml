@@ -36,6 +36,7 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["provider_counter: exercise real token-count transport with mocked HTTP"]
 
 [tool.ruff]
 line-length = 100

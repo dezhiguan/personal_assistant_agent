@@ -235,7 +235,19 @@ class InvocationCollector(BaseCallbackHandler):
 
     def on_llm_error(self, error, *, run_id, **kwargs):
         # Provider exception bodies can contain credentials. Export only the class.
-        self._finish(run_id, "error", error=type(error).__name__)
+        usage = getattr(error, "usage_metadata", None)
+        fields = {}
+        if usage:
+            self.calls[str(run_id)] = usage
+            span = self.spans.get(str(run_id), {})
+            fields = {
+                "usage": usage,
+                "cost_estimate": estimate_cost(
+                    usage,
+                    replace(self.settings, model_name=span.get("name", self.settings.model_name)),
+                ),
+            }
+        self._finish(run_id, "error", error=type(error).__name__, **fields)
 
     def on_tool_start(
         self, serialized, input_str, *, run_id, parent_run_id=None, inputs=None, **kwargs

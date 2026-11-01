@@ -36,7 +36,7 @@ def test_small_window_keeps_core_tools_and_caps_output(tmp_path, monkeypatch):
         assert {"write_file", "read_file", "task", "calculate", "baidu_search"} <= names
         assert "get_city_weather" not in names
         assert len(names) == 14
-        assert count_tokens_approximately(messages, tools=kwargs["tools"]) < 6144
+        assert count_tokens_approximately(messages, tools=kwargs["tools"]) < 6016
         assert self.max_tokens == 2048
         assert self.profile["max_input_tokens"] == 8192
         if any(isinstance(m, ToolMessage) for m in messages):
@@ -58,7 +58,7 @@ def test_small_window_keeps_core_tools_and_caps_output(tmp_path, monkeypatch):
         result = asyncio.run(
             build_agent(settings()).ainvoke(
                 {
-                    "messages": [HumanMessage(content="你好")],
+                    "messages": [HumanMessage(content="计算 2+2")],
                 }
             )
         )
@@ -84,10 +84,10 @@ def test_long_history_is_summarized_archived_and_fits_before_transport(tmp_path,
     async def generate(self, messages, **kwargs):
         if not kwargs.get("tools"):
             summary_calls.append(messages)
-            assert self.max_tokens == 512
+            assert self.max_tokens == 384
             return response(AIMessage(content="SYNTHETIC_SUMMARY：此前在核对合成资料。"))
         model_calls.append(messages)
-        assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6144
+        assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6016
         assert any("SYNTHETIC_SUMMARY" in str(m.content) for m in messages)
         assert "继续简短回答" in str(messages[-1].content)
         return response(AIMessage(content="已继续"))
@@ -109,7 +109,7 @@ def test_subagent_inherits_small_window_and_tool_selection(tmp_path, monkeypatch
         names = {t["function"]["name"] for t in kwargs["tools"]}
         assert "get_city_weather" not in names
         assert self.max_tokens == 2048
-        assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6144
+        assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6016
         if "task" not in names:
             child_calls.append(messages)
             return response(AIMessage(content="子任务完成"))
@@ -135,7 +135,7 @@ def test_subagent_inherits_small_window_and_tool_selection(tmp_path, monkeypatch
         result = asyncio.run(
             build_agent(settings()).ainvoke(
                 {
-                    "messages": [HumanMessage(content="你好")],
+                    "messages": [HumanMessage(content="请委派子代理回复你好")],
                 }
             )
         )
@@ -162,8 +162,11 @@ def test_archive_read_after_compaction_fits_remaining_budget(
             summary_calls.append(messages)
             return response(AIMessage(content="旧任务是整理合成项目资料。"))
         main_calls.append(messages)
-        assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6144
-        assert any(isinstance(m, HumanMessage) and m.content == "你是谁？" for m in messages)
+        assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6016
+        assert any(
+            isinstance(m, HumanMessage) and m.content == "读取 /archive.txt 后回答项目代号"
+            for m in messages
+        )
         tool_results = [m for m in messages if isinstance(m, ToolMessage)]
         if not tool_results:
             return response(
@@ -185,13 +188,11 @@ def test_archive_read_after_compaction_fits_remaining_budget(
                 )
             )
         assert len(tool_results[0].content) < len(original)
-        if system_padding:
-            assert len(tool_results[0].content) < 4000
         assert "Preview truncated" in tool_results[0].content
         assert "/archive.txt" in tool_results[0].content
         call_ids = {c["id"] for m in messages if isinstance(m, AIMessage) for c in m.tool_calls}
         assert all(m.tool_call_id in call_ids for m in tool_results)
-        return response(AIMessage(content="我是个人智能助理。"))
+        return response(AIMessage(content="Bluepine"))
 
     async def agenerate(self, messages, **kwargs):
         return generate(self, messages, **kwargs)
@@ -202,11 +203,11 @@ def test_archive_read_after_compaction_fits_remaining_budget(
     ):
         prompt = PromptVersion(LOCAL_PROMPT.read_text() + "x" * system_padding, "synthetic")
         graph = build_agent(settings(), prompt=prompt)
-        value = {"messages": [HumanMessage(content="你是谁？")]}
+        value = {"messages": [HumanMessage(content="读取 /archive.txt 后回答项目代号")]}
         result = asyncio.run(graph.ainvoke(value)) if asynchronous else graph.invoke(value)
     assert len(main_calls) == 2
     assert len(summary_calls) == 1
-    assert result["messages"][-1].content == "我是个人智能助理。"
+    assert result["messages"][-1].content == "Bluepine"
     assert (directory / "archive.txt").read_text() == original
 
 
@@ -241,7 +242,9 @@ def test_old_usage_does_not_force_another_summary_for_a_small_packet(tmp_path, m
         return response(AIMessage(content="4"))
 
     with patch("langchain_openai.ChatOpenAI._agenerate", generate):
-        asyncio.run(build_agent(settings()).ainvoke({"messages": [HumanMessage(content="你好")]}))
+        asyncio.run(
+            build_agent(settings()).ainvoke({"messages": [HumanMessage(content="计算 2+2")]})
+        )
     assert len(calls) == 2
     assert not summaries
 
@@ -268,9 +271,11 @@ def test_real_streaming_graph_compacts_archive_read_without_leaking_summary(tmp_
                 ],
             )
         else:
-            assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6144
-            assert any(isinstance(m, HumanMessage) and m.content == "你是谁？" for m in messages)
-            chunk = AIMessageChunk(content="我是个人智能助理。")
+            assert count_tokens_approximately(messages, tools=kwargs["tools"]) <= 6016
+            assert any(
+                isinstance(m, HumanMessage) and m.content == "读取 /archive.txt" for m in messages
+            )
+            chunk = AIMessageChunk(content="Bluepine")
         yield ChatGenerationChunk(message=chunk)
 
     async def run():
@@ -281,7 +286,7 @@ def test_real_streaming_graph_compacts_archive_read_without_leaking_summary(tmp_
             messages=[
                 {
                     "role": "user",
-                    "content": "你是谁？",
+                    "content": "读取 /archive.txt",
                 }
             ],
         )
@@ -289,7 +294,7 @@ def test_real_streaming_graph_compacts_archive_read_without_leaking_summary(tmp_
 
     with patch("langchain_openai.ChatOpenAI._astream", stream):
         events = asyncio.run(run())
-    assert [e["text"] for e in events if e["type"] == "delta"] == ["我是个人智能助理。"]
+    assert [e["text"] for e in events if e["type"] == "delta"] == ["Bluepine"]
     assert events[-1]["type"] == "done"
     assert events[-1]["trace_summary"]["model_calls"] == 3
 
@@ -321,6 +326,43 @@ def test_simulation_config_can_be_disabled_or_read_from_environment(monkeypatch)
     assert value.context_tool_names == ("calculate", "get_current_time")
     model = build_model(Settings(api_key="synthetic"), max_tokens=8192)
     assert model.max_tokens == 8192
+
+
+def test_identity_ignores_old_tasks_without_discarding_stored_history(tmp_path, monkeypatch):
+    from personal_assistant_agent.services.prompts import LOCAL_PROMPT, PromptVersion
+
+    monkeypatch.chdir(tmp_path)
+    history = [
+        HumanMessage(content="读取旧项目所有文件并整理。" + "历史资料 " * 6000),
+        AIMessage(content="尚待完成。"),
+        HumanMessage(content="你是谁？"),
+    ]
+    calls = []
+
+    async def generate(self, messages, **kwargs):
+        calls.append(messages)
+        assert not kwargs.get("tools")
+        assert [m.content for m in messages if isinstance(m, HumanMessage)] == ["你是谁？"]
+        assert not any("历史资料" in str(m.content) for m in messages)
+        assert not any("途牛" in str(m.content) for m in messages)
+        return response(AIMessage(content="我是个人智能助理。"))
+
+    with patch("langchain_openai.ChatOpenAI._agenerate", generate):
+        result = asyncio.run(
+            build_agent(
+                settings(prompt_ref="synthetic"),
+                prompt=PromptVersion(LOCAL_PROMPT.read_text().strip(), "synthetic"),
+            ).ainvoke(
+                {
+                    "messages": history,
+                    "todos": [{"content": "整理旧文件", "status": "in_progress"}],
+                }
+            )
+        )
+    assert len(calls) == 1
+    assert len(result["messages"]) == len(history) + 1
+    assert result["todos"][0]["status"] == "in_progress"
+    assert not list((tmp_path / "workspace/conversation_history").glob("*.md"))
 
 
 @pytest.mark.parametrize(

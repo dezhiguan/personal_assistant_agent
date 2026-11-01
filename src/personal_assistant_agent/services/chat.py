@@ -18,6 +18,7 @@ from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
 from pydantic import TypeAdapter
 
+from personal_assistant_agent.agents.token_budget import TokenBudgetViolation, TokenCountUnavailable
 from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.observability.costs import estimate_calls
 from personal_assistant_agent.observability.timeline import InvocationCollector, measured_stream
@@ -55,6 +56,11 @@ def _tool_failed(message: ToolMessage) -> bool:
 def public_error(error: Exception) -> tuple[str, str]:
     """Return safe errors without provider bodies, keys, or stack traces."""
     from langchain_core.exceptions import ContextOverflowError
+
+    if isinstance(error, TokenCountUnavailable):
+        return "MODEL_TOKEN_COUNT_UNAVAILABLE", "无法核验本次 Token 预算，已停止生成，请稍后重试。"
+    if isinstance(error, TokenBudgetViolation):
+        return "MODEL_CONTEXT_ACCOUNTING_ERROR", "模型实际用量超过模拟窗口，已停止本轮调用。"
 
     if isinstance(error, ContextOverflowError):
         return (

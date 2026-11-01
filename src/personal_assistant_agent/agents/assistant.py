@@ -30,6 +30,7 @@ from langgraph.graph.state import CompiledStateGraph
 
 from personal_assistant_agent.agents.context import ContextWindowMiddleware
 from personal_assistant_agent.agents.model import build_model
+from personal_assistant_agent.agents.tool_policy import selected_tools, standalone_question
 from personal_assistant_agent.agents.tools import build_tools
 from personal_assistant_agent.agents.workspace import EXECUTE_DESCRIPTION, WorkspaceBackend
 from personal_assistant_agent.core.config import Settings
@@ -293,6 +294,8 @@ def check_plan_commit(state, runtime):
         isinstance(m, ToolMessage) and m.name == "write_todos" for m in messages[start:]
     )
     user_text = str(messages[start].content)
+    if standalone_question(user_text):
+        return None
     from personal_assistant_agent.services.delivery import initial_steps
 
     edit_requested = bool(initial_steps(user_text)) or bool(
@@ -339,10 +342,32 @@ def check_plan_commit(state, runtime):
 def planning_context(request: ModelRequest) -> SystemMessage:
     """Make restored and revised todos visible to every model step."""
     blocks = request.system_message.content_blocks if request.system_message else []
+    user = next((m for m in reversed(request.messages) if isinstance(m, HumanMessage)), None)
+    if (
+        getattr(request.model, "context_window_tokens", 0)
+        and user
+        and standalone_question(str(user.content))
+    ):
+        return SystemMessage(
+            content=[
+                *blocks,
+                {
+                    "type": "text",
+                    "text": (
+                        "本轮为独立的寒暄或身份问题。直接简短回答，"
+                        "不继续旧任务，不调用工具或更新计划。"
+                    ),
+                },
+            ]
+        )
     todos = json.dumps(request.state.get("todos", []), ensure_ascii=False)
+    tools = (
+        selected_tools(request.messages, request.tools)
+        if getattr(request.model, "context_window_tokens", 0)
+        else request.tools
+    )
     available = [
-        t.name if isinstance(t, BaseTool) else t.get("function", t).get("name", "")
-        for t in request.tools
+        t.name if isinstance(t, BaseTool) else t.get("function", t).get("name", "") for t in tools
     ]
     return SystemMessage(
         content=[
@@ -405,6 +430,34 @@ def _build_agent(
         if unknown:
             raise ValueError("MODEL_CONTEXT_TOOL_NAMES 包含未知工具：" + ", ".join(sorted(unknown)))
         agent_tools = [tool for tool in agent_tools if tool.name in settings.context_tool_names]
+    if settings.context_window_tokens:
+        # The long local travel/calendar section has no active tools in the
+        # small-window profile. Remove only this exact known block, preserving
+        # global safety rules and any other hosted-prompt instructions.
+        local_text = LOCAL_PROMPT.read_text()
+        marker = "\n生活查询与外部操作："
+        inactive = local_text[local_text.index(marker) :].rstrip()
+        life_tools = {
+            "get_city_weather",
+            "get_weather_alert",
+            "geocode",
+            "ip_locate",
+            "check_cn_holiday",
+            "convert_currency",
+            "convert_units",
+            "fetch_url",
+            "fetch_rss",
+            "translate",
+            "route_plan",
+            "search_flights",
+            "search_hotels",
+            "book_flight",
+            "book_hotel",
+            "create_calendar_event",
+            "set_reminder",
+        }
+        if not life_tools.intersection(t.name for t in agent_tools):
+            system_prompt = system_prompt.replace(inactive, "")
     # Deep Agents resolves profiles using the model's tracing provider, which
     # may be a Qwen pricing alias rather than "openai".
     register_harness_profile(
