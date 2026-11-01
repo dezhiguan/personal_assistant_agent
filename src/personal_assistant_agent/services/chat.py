@@ -8,9 +8,12 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
+from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
+from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.messages.ai import add_usage
+from langgraph.errors import GraphRecursionError
 from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
 from pydantic import TypeAdapter
@@ -66,8 +69,23 @@ def public_error(error: Exception) -> tuple[str, str]:
         return "MODEL_AUTH_ERROR", "Qwen 认证失败，请检查服务端的 API Key 和地域。"
     if isinstance(error, RateLimitError):
         return "MODEL_RATE_LIMIT", "模型服务暂时繁忙或额度不足，请稍后重试。"
-    if isinstance(error, (TimeoutError, APITimeoutError)):
+    if isinstance(error, GraphRecursionError):
+        return (
+            "WORKFLOW_STEP_LIMIT",
+            "任务达到执行步骤上限，已保存的文件和计划仍保留。请核对现有成果后继续。",
+        )
+    if isinstance(error, (ModelCallLimitExceededError, ToolCallLimitExceededError)):
+        return (
+            "WORKFLOW_CALL_LIMIT",
+            "本轮任务达到调用次数上限，已停止继续调用。请核对已完成成果后继续。",
+        )
+    if isinstance(error, APITimeoutError):
         return "MODEL_TIMEOUT", "等待模型回复超时，请重试。"
+    if isinstance(error, TimeoutError):
+        return (
+            "WORKFLOW_TIMEOUT",
+            "本轮任务达到总时限，已保存的文件和计划仍保留。请核对现有成果后继续。",
+        )
     if isinstance(error, APIConnectionError):
         return "MODEL_CONNECTION_ERROR", "暂时无法连接 Qwen 服务，请稍后重试。"
     return "MODEL_ERROR", "这次回复未能完成，请重试或开启新对话。"
@@ -75,6 +93,10 @@ def public_error(error: Exception) -> tuple[str, str]:
 
 class ChatService:
     def __init__(self, agent: Any, settings: Settings) -> None:
+        if not 0 < settings.workflow_timeout <= 3600:
+            raise ValueError("WORKFLOW_TIMEOUT_SECONDS 必须大于0且不超过3600。")
+        if not 16 <= settings.recursion_limit <= 10000:
+            raise ValueError("AGENT_RECURSION_LIMIT 必须为16–10000。")
         self.agent = agent
         self.settings = settings
         self.trace_client = (
@@ -113,7 +135,7 @@ class ChatService:
             },
             "run_id": UUID(request_id),
             "run_name": "personal-assistant-chat",
-            "recursion_limit": 100,
+            "recursion_limit": self.settings.recursion_limit,
             "callbacks": [usage_collector, *callbacks],
             "metadata": {
                 "conversation_id": str(payload.conversation_id),
@@ -149,7 +171,7 @@ class ChatService:
             with tracing_context(enabled=self.settings.tracing_configured):
                 # A workflow makes several model calls; each call already has
                 # its own request_timeout enforced by the model transport.
-                async with asyncio.timeout(max(300, self.settings.request_timeout + 10)):
+                async with asyncio.timeout(self.settings.workflow_timeout):
                     async for mode, data in self.agent.astream(
                         {
                             "messages": [m.model_dump() for m in payload.messages],
@@ -249,7 +271,14 @@ class ChatService:
             raise
         except Exception as error:
             code, message = public_error(error)
-            logger.warning("Chat failed request_id=%s code=%s", request_id, code)
+            logger.warning(
+                "Chat failed request_id=%s code=%s error_type=%s",
+                request_id,
+                code,
+                type(error).__name__,
+            )
+            for call_id, name in tool_calls.items():
+                yield ToolProgress(name=name, call_id=call_id, status="error").model_dump()
             yield {"type": "error", "code": code, "message": message, "request_id": request_id}
 
     async def close(self) -> None:

@@ -36,6 +36,7 @@
 
 ```dotenv
 TOOL_TIMEOUT_SECONDS=15
+TOOL_DNS_FALLBACK=
 AMAP_API_KEY=
 QWEATHER_API_HOST=
 QWEATHER_API_KEY=
@@ -153,6 +154,7 @@ set_reminder(title="提交报告", remind_at="2030-01-02T17:00:00+08:00")
 ## 网络与数据边界
 
 - 所有新网络请求默认 15 秒，最大 60 秒；响应解压后最多 2 MiB；不继承系统代理。
+- `fetch_url/fetch_rss` 可通过 `TOOL_DNS_FALLBACK=google` 或 `cloudflare` 启用备用 DoH，默认关闭。只有连接失败时才提交域名（不含路径和查询参数），备用地址仍逐一校验公网范围并保留原 Host、TLS SNI 和证书校验；私网解析及 HTTP 403 等拒绝不会触发备用解析，不修改系统 DNS。
 - `fetch_url/fetch_rss` 校验每次重定向的公网地址，并连接已校验的 IP，保留 Host/TLS SNI，避免 DNS 重绑定；拒绝 URL 凭据及非 80/443 端口。
 - 查询与正文属于外部不可信数据，不能作为工具执行或权限指令。
 - 地名可能重名，核对返回省份和国家；气象预警查不到/接口失败不能等同于安全无预警。
@@ -160,6 +162,19 @@ set_reminder(title="提交报告", remind_at="2030-01-02T17:00:00+08:00")
 - IP 查询、天气地点、翻译文本和路线坐标会发给对应数据服务。公共服务存在额度、覆盖和可用性限制。
 
 ## 验证
+
+完整32工具场景保存在 `evaluations/scenarios/all-tools.txt`，通过真实聊天HTTP接口执行：
+
+```bash
+uv run python scripts/verify_comprehensive.py
+```
+
+脚本使用真实模型、真实数据服务及独立测试目录；预订仅使用不存在的全零报价验证拒绝，不发送创单确认。根据 LangSmith 实际工具追踪和磁盘文件核验覆盖率、高德7种操作、去返程查询日期、600元固定预算、5000米单位换算、480分钟议程、文件编辑/删除、子代理复核及两个带提醒的ICS文件，不接受助理自报成功。报告保存在 `artifacts/comprehensive/`，其中 `observed_coverage.csv` 为追踪核实的实际调用统计。追踪上传不完整时不判通过，可使用 `--audit <运行时间戳>` 重新核验已有请求，不重复执行模型或工具。
+
+`passed` 表示流程与固定断言通过；`provider_success` 独立表示所有外部查询成功。缺配置、验证码、服务故障会保留在 `blocked` 中，不得把调用覆盖率当作业务全部可用。
+模型自报次数可能遗漏重试、后续调用或子代理调用；差异保存在 `self_reported_coverage_discrepancies`，以追踪生成的 `observed_coverage.csv` 为准。
+
+长任务默认允许2048个图执行步骤、主代理96次模型调用、256次工具调用，整体1200秒。图步骤包含中间件，32工具工作流不能沿用100步的短任务限额。限额仍会明确中止异常任务，失败或停止后页面不会继续显示“正在调用”。
 
 ```bash
 make agent-check

@@ -13,6 +13,11 @@ class Settings:
     api_key: str = field(default="", repr=False)
     base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     request_timeout: float = 90
+    max_output_tokens: int = 8192
+    workflow_timeout: float = 1200
+    recursion_limit: int = 2048
+    max_model_calls: int = 96
+    max_tool_calls: int = 256
     tracing_enabled: bool = False
     langsmith_api_key: str = field(default="", repr=False)
     langsmith_project: str = "personal-assistant-agent"
@@ -22,6 +27,7 @@ class Settings:
     baidu_timeout: float = 10
     baidu_proxy: str = field(default="", repr=False)
     tool_timeout: float = 15
+    dns_fallback: str = ""
     amap_api_key: str = field(default="", repr=False)
     qweather_host: str = field(default="", repr=False)
     qweather_api_key: str = field(default="", repr=False)
@@ -51,6 +57,11 @@ def get_settings() -> Settings:
             "DASHSCOPE_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"
         ).strip(),
         request_timeout=float(os.getenv("MODEL_TIMEOUT_SECONDS", "90")),
+        max_output_tokens=int(os.getenv("MODEL_MAX_OUTPUT_TOKENS", "8192")),
+        workflow_timeout=float(os.getenv("WORKFLOW_TIMEOUT_SECONDS", "1200")),
+        recursion_limit=int(os.getenv("AGENT_RECURSION_LIMIT", "2048")),
+        max_model_calls=int(os.getenv("AGENT_MAX_MODEL_CALLS", "96")),
+        max_tool_calls=int(os.getenv("AGENT_MAX_TOOL_CALLS", "256")),
         tracing_enabled=os.getenv("LANGSMITH_TRACING", "false").lower() == "true",
         langsmith_api_key=os.getenv("LANGSMITH_API_KEY", ""),
         langsmith_project=os.getenv("LANGSMITH_PROJECT", "personal-assistant-agent"),
@@ -60,6 +71,7 @@ def get_settings() -> Settings:
         baidu_timeout=float(os.getenv("BAIDU_TIMEOUT_SECONDS", "10")),
         baidu_proxy=os.getenv("BAIDU_HTTP_PROXY", "").strip(),
         tool_timeout=float(os.getenv("TOOL_TIMEOUT_SECONDS", "15")),
+        dns_fallback=os.getenv("TOOL_DNS_FALLBACK", "").strip().lower(),
         amap_api_key=os.getenv("AMAP_API_KEY", ""),
         qweather_host=os.getenv("QWEATHER_API_HOST", "").strip(),
         qweather_api_key=os.getenv("QWEATHER_API_KEY", ""),

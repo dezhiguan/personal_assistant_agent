@@ -161,6 +161,13 @@ class Tuniu:
             payload = json.loads(
                 "\n".join(c["text"] for c in result.get("content", []) if c.get("type") == "text")
             )
+        # The live flight MCP wraps its business JSON in a string-valued
+        # `result`; hotel responses may already contain the business object.
+        for _ in range(3):
+            if not isinstance(payload, dict) or set(payload) != {"result"}:
+                break
+            inner = payload["result"]
+            payload = json.loads(inner) if isinstance(inner, str) else inner
         if (
             not isinstance(payload, dict)
             or any(payload.get(k) is False for k in ("success", "successCode"))

@@ -257,7 +257,9 @@ def build_life_tools(settings: Settings) -> list:
         """
         if not 1 <= max_chars <= 30000:
             raise ToolError("max_chars 必须为 1–30000。")
-        raw, content_type, final_url = await fetch_public(url, timeout)
+        raw, content_type, final_url = await fetch_public(
+            url, timeout, dns_fallback=settings.dns_fallback
+        )
         if not any(t in content_type.lower() for t in ("text/", "application/xhtml+xml")):
             raise ToolError("仅支持文本或 HTML 网页。")
         encoding = re.search(r"charset=([\w-]+)", content_type, re.I)
@@ -378,7 +380,7 @@ def build_life_tools(settings: Settings) -> list:
         """
         if not 1 <= max_items <= 30:
             raise ToolError("max_items 必须为 1–30。")
-        raw, _, final_url = await fetch_public(url, timeout)
+        raw, _, final_url = await fetch_public(url, timeout, dns_fallback=settings.dns_fallback)
         root = ElementTree.fromstring(raw)
         atom = "{http://www.w3.org/2005/Atom}"
         if root.tag not in {

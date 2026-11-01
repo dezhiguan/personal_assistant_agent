@@ -120,7 +120,7 @@ function renderAssistant(row, message, session) {
   if (!message.text && message.state === 'streaming') body.append(thinking());
   else renderMarkdown(body, message.text);
   row.append(heading, plan, body);
-  if (message.toolProgress) {
+  if (message.toolProgress && message.state === 'streaming') {
     const progress = document.createElement('div');
     progress.className = 'message-state tool-progress';
     progress.setAttribute('role', 'status');
@@ -309,6 +309,7 @@ async function runConversation(session, message) {
     }
     if (!done) throw new Error('回复连接中断，请重新生成。');
   } catch (error) {
+    delete message.toolProgress;
     if (!running.cancelled) {
       message.state = 'error';
       message.error = error instanceof TypeError ? '网络连接中断，请检查服务后重试。' : error.message;
@@ -323,6 +324,7 @@ function retryMessage(session, message) {
   message.state = 'streaming';
   message.requestId = null;
   delete message.todos;
+  delete message.toolProgress;
   runConversation(session, message);
 }
 

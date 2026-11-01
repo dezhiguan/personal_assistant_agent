@@ -182,7 +182,7 @@ def test_redirect_to_private_address_never_connects_and_dns_is_pinned(monkeypatc
 
 
 def test_fetch_text_rss_atom_and_entity_rejection(monkeypatch):
-    async def fetch(url, timeout):
+    async def fetch(url, timeout, **kwargs):
         documents = {
             "html": b"<p>Hello</p><script>steal()</script><p>World</p>",
             "rss": b"<rss><channel><item><title>News</title><link>https://example.com/</link>"

@@ -12,7 +12,12 @@ def explicit_edit(text: str, todos: list[dict]) -> tuple[list[dict], str | None]
     ):
         if not re.search(r"(?:不要|不|不能|别)清空", text):
             return [], None
-    match = re.search(r"只在原待办末尾追加一项[“「]([^”」]+)[”」]", text)
+    match = re.search(
+        r"(?:^|[。；;\n])(?:请|现在|立即)?只?在(?:原|现有|当前)?"
+        r"(?:待办列表|待办|清单|任务计划)的?(?:末尾|后面|最后)再?"
+        r"(?:追加|增加|添加|新增)(?:一项|一条)?[“「\"]([^”」\"]+)[”」\"]",
+        text,
+    )
     if match and todos and len(todos) < 32 and len(match[1]) <= 500:
         return [
             *todos,
