@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="personal-assistant-agent 全双工 Agent 交互技术设计：持续追加对话与同任务要求合并优先、10 个用户用例、现状分析、状态机、实施计划与验收方案。">
+  <title>Full-duplex Agent Interaction · 技术设计</title>
+  <style>
+    :root{--paper:#f7f5ef;--white:#fffefa;--ink:#202e2d;--muted:#64716b;--line:#d8ddd3;--green:#214d43;--green-light:#e7eee4;--rust:#af4c30;--rust-light:#f7e9df;--mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace;--body:"Avenir Next","PingFang SC","Microsoft YaHei",sans-serif;--serif:Georgia,"Songti SC","STSong",serif}
+    *{box-sizing:border-box}html{scroll-behavior:smooth;scroll-padding-top:32px}body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.85 var(--body);-webkit-font-smoothing:antialiased}a{color:var(--green);text-underline-offset:4px}a:hover{color:var(--rust)}button{font:inherit;cursor:pointer}button:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var(--rust);outline-offset:4px}::selection{background:#d4e2c7}code,pre,.mono{font-family:var(--mono)}code{font-size:.86em;overflow-wrap:anywhere}p{margin:12px 0}h1,h2,h3,h4{line-height:1.35}h1{font:500 clamp(42px,5vw,72px)/1.12 var(--serif);letter-spacing:-2px;margin:28px 0}h2{font:500 31px/1.4 var(--serif);letter-spacing:-.5px;margin:0 0 12px}h3{font-size:18px;margin:26px 0 10px}h4{font-size:15px;margin:12px 0 6px}strong{font-weight:650}small,.small{font-size:12px}.muted{color:var(--muted)}.skip{position:absolute;top:-80px;left:20px;background:var(--white);padding:12px;z-index:20}.skip:focus{top:16px}
+    .topline{height:7px;background:var(--green)}.masthead{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);margin:0 4vw;padding:20px 0;gap:20px}.brand{font:600 12px var(--mono);letter-spacing:1px}.masthead span{font:11px var(--mono);color:var(--muted)}.layout{display:grid;grid-template-columns:228px minmax(0,1fr);max-width:1512px;margin:auto;padding:0 4vw;gap:54px}.sidebar{position:sticky;top:24px;align-self:start;padding:38px 0 24px;max-height:calc(100vh - 32px);overflow-y:auto}.sidebar .eyebrow{margin-bottom:20px}.sidebar a{display:block;text-decoration:none;font-size:12px;padding:8px 10px;border-left:2px solid transparent;color:var(--muted)}.sidebar a b{font:10px var(--mono);margin-right:11px;opacity:.7}.sidebar a:hover,.sidebar a.active{color:var(--green);background:var(--green-light);border-color:var(--green)}.side-note{border-top:1px solid var(--line);margin-top:24px;padding-top:18px;font-size:11px;color:var(--muted)}.print{display:inline-flex;align-items:center;gap:8px;background:transparent;color:var(--green);border:1px solid var(--line);border-radius:3px;padding:7px 13px;font-size:11px}.print:hover{background:var(--green-light)}main{min-width:0}.eyebrow{font:11px/1.5 var(--mono);letter-spacing:1.8px;color:var(--green);text-transform:uppercase}.hero{padding:48px 0 38px;border-bottom:1px solid var(--ink)}.status{display:inline-flex;align-items:center;gap:8px;background:var(--rust-light);color:#8c412b;border:1px solid #e9c9b6;padding:4px 10px;font-size:11px;border-radius:2px}.status:before{content:"";width:5px;height:5px;background:var(--rust);border-radius:50%}.hero-grid{display:grid;grid-template-columns:1fr 210px;gap:38px;align-items:end}.hero h1 .en{display:block;font-style:italic;color:var(--green)}.lede{font-size:17px;max-width:640px;line-height:1.9}.hero-note{padding:18px 0 4px 20px;border-left:1px solid var(--line);font-size:12px}.hero-note .big{display:block;font:50px/1 var(--serif);color:var(--green);margin-bottom:10px}.meta{display:flex;flex-wrap:wrap;gap:10px 28px;font:11px/1.7 var(--mono);color:var(--muted);margin-top:26px}.meta b{color:var(--ink);font-weight:500}.decision{display:grid;grid-template-columns:104px 1fr;gap:22px;background:var(--green);color:var(--white);padding:25px 28px;margin:28px 0 36px}.decision .eyebrow{color:#b9cdb7}.decision p{margin:0}.decision code{color:#dbebc5}.section{padding:38px 0 42px;border-bottom:1px solid var(--line);scroll-margin-top:28px}.section-label{display:flex;align-items:center;gap:14px;margin-bottom:18px}.section-label span{font:11px var(--mono);color:var(--rust)}.section-label:after{content:"";width:50px;height:1px;background:var(--rust)}.section-intro{color:var(--muted);margin-bottom:22px}.two{display:grid;grid-template-columns:1fr 1fr;gap:18px}.three{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.panel{background:var(--white);border:1px solid var(--line);padding:21px 23px}.panel h3{margin:0 0 10px}.panel .index{font:11px var(--mono);color:var(--rust);margin-bottom:12px}.panel p{font-size:13px;margin:8px 0}.callout{border-left:3px solid var(--rust);padding:13px 18px;background:var(--rust-light);font-size:13px;margin:20px 0}.callout.green{border-color:var(--green);background:var(--green-light)}.callout strong{display:block;margin-bottom:4px}.table-wrap{width:100%;overflow-x:auto;margin:18px 0 24px;border:1px solid var(--line);background:var(--white)}table{width:100%;border-collapse:collapse;font-size:12px;line-height:1.75;text-align:left}th{font-size:11px;color:var(--green);background:#eef1e8;font-weight:650;white-space:nowrap}th,td{padding:12px 14px;border-bottom:1px solid var(--line);vertical-align:top}tr:last-child td{border-bottom:0}td:first-child{font-weight:550}td p{margin:0}td code{font-size:11px}caption{text-align:left;padding:12px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line)}.tag{display:inline-block;border:1px solid var(--line);padding:1px 7px;font:10px/1.8 var(--mono);color:var(--muted);border-radius:2px;white-space:nowrap}.tag.green{background:var(--green-light);color:var(--green);border-color:#cad9c5}.tag.rust{background:var(--rust-light);color:var(--rust);border-color:#ead0bf}.diagram{background:var(--white);border:1px solid var(--line);padding:20px 16px;margin:22px 0}.diagram svg{display:block;width:100%;height:auto}.diagram figcaption{font-size:11px;color:var(--muted);margin:14px 8px 0}.diagram svg text{font-family:var(--body)}.diagram .node{fill:#f7f5ef;stroke:#ced6c9}.diagram .core{fill:#214d43;stroke:#214d43}.diagram .label{font-size:13px;fill:#202e2d}.diagram .sublabel{font-size:10px;fill:#64716b}.diagram .on-dark{fill:#fffefa}.diagram .arrow{fill:none;stroke:#547464;stroke-width:1.4;marker-end:url(#arrow)}.diagram .dashed{stroke-dasharray:5 4}.diagram .area{fill:#f0f3eb;stroke:#d8ddd3;stroke-dasharray:5 4}
+    ul,ol{padding-left:21px}li{margin:8px 0}pre{overflow-x:auto;background:#20332e;color:#e6efdd;border:1px solid #29483e;padding:20px 22px;font-size:11px;line-height:1.9;border-radius:2px;tab-size:2}pre code{font-size:inherit;color:inherit;overflow-wrap:normal}details{border:1px solid var(--line);background:var(--white);padding:0 18px;margin:12px 0}summary{cursor:pointer;padding:14px 0;font-size:13px;font-weight:600}details[open]{padding-bottom:15px}details p{font-size:12px}details pre{margin-bottom:0}.steps{list-style:none;padding:0;counter-reset:step}.steps li{display:grid;grid-template-columns:30px 1fr;gap:12px;padding:12px 0;border-bottom:1px solid var(--line);font-size:13px}.steps li:before{counter-increment:step;content:counter(step,decimal-leading-zero);font:12px/2 var(--mono);color:var(--rust)}.steps li:last-child{border:0}.phase{display:grid;grid-template-columns:100px 1fr;gap:24px;padding:22px 0;border-top:1px solid var(--line)}.phase:first-of-type{border-top:0}.phase-id{font:36px/1.2 var(--serif);color:var(--green)}.phase-id span{display:block;font:10px var(--mono);margin-top:8px;color:var(--muted)}.phase h3{margin:0 0 8px}.phase p,.phase li{font-size:13px}.evidence-list{font-size:12px}.evidence-list li{margin:12px 0}.source-link{font:10px var(--mono)}.state-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}.state-card{padding:12px 13px;background:var(--white);border:1px solid var(--line)}.state-card b{display:block;font:11px var(--mono);color:var(--green)}.state-card span{display:block;font-size:11px;color:var(--muted);margin-top:4px}.state-card.end{background:var(--green-light)}.state-card.warn{background:var(--rust-light)}
+    .sim{background:#22382f;color:#edf2e5;padding:26px;margin:25px 0}.sim .eyebrow{color:#bacfb0}.sim h3{margin:8px 0 0;font-family:var(--serif);font-size:23px;font-weight:500}.sim p{font-size:12px;color:#cad5c7}.sim-layout{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}.sim-state{padding:17px;border:1px solid #57705a;min-height:125px}.sim-state dt{font:10px var(--mono);color:#b6c8ac;letter-spacing:1px}.sim-state dd{margin:7px 0 13px;font-size:13px}.sim-state dd:last-child{margin-bottom:0}.sim-controls{display:flex;flex-wrap:wrap;gap:7px;margin-top:18px}.sim-controls button{padding:7px 12px;border:1px solid #7d9676;background:transparent;color:#edf2e5;border-radius:2px;font-size:11px}.sim-controls button.primary{background:#dce8ce;border-color:#dce8ce;color:#20332e}.sim-controls button:disabled{opacity:.35;cursor:not-allowed}.sim-controls button:hover:not(:disabled){background:#426044}.sim-log{height:190px;overflow-y:auto;list-style:none;padding:14px 16px;margin:0;background:#192d24;font:11px/1.8 var(--mono)}.sim-log li{margin:0 0 8px}.sim-log em{color:#d5aa7c;font-style:normal}.sim-caption{margin-top:16px!important;margin-bottom:0!important}.checklist{display:grid;grid-template-columns:1fr 1fr;gap:12px}.check{display:flex;gap:11px;font-size:13px;padding:13px 15px;background:var(--white);border:1px solid var(--line)}.check:before{content:"↗";color:var(--rust)}footer{padding:30px 0 60px;font-size:11px;color:var(--muted)}.footer-line{display:flex;justify-content:space-between;gap:18px}.nowrap{white-space:nowrap}
+    @media(min-width:1500px){body{font-size:16px}}@media(max-width:1100px){.layout{grid-template-columns:180px minmax(0,1fr);gap:30px}.hero-grid{grid-template-columns:1fr}.hero-note{display:none}.three{grid-template-columns:1fr}.state-grid{grid-template-columns:repeat(3,1fr)}}@media(max-width:760px){.masthead{margin:0 6vw;padding:16px 0}.masthead span{display:none}.layout{display:block;padding:0 6vw}.sidebar{position:relative;top:0;max-height:none;padding:20px 0 0}.sidebar nav{display:flex;gap:3px;overflow-x:auto;padding-bottom:8px}.sidebar a{white-space:nowrap;border-left:0;border-bottom:2px solid transparent;padding:7px 10px}.sidebar a.active{border-bottom-color:var(--green)}.sidebar .eyebrow,.side-note{display:none}.hero{padding-top:28px}.hero h1{font-size:43px;letter-spacing:-1px}.lede{font-size:15px}.decision{grid-template-columns:1fr;padding:20px;gap:12px}.two,.sim-layout,.checklist{grid-template-columns:1fr}.section{padding:30px 0}h2{font-size:27px}.state-grid{grid-template-columns:1fr 1fr}.phase{grid-template-columns:52px 1fr;gap:16px}.phase-id{font-size:28px}.panel{padding:18px}.sim{padding:20px}.footer-line{display:block}.diagram{padding:10px 5px}.diagram figcaption{font-size:10px}th,td{padding:10px 11px}table{min-width:590px}.meta{font-size:10px;gap:8px 18px}}
+    @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media print{body{background:white;font-size:10pt;line-height:1.65}.topline,.sidebar,.print,.skip,.sim-controls{display:none}.masthead{margin:0;padding:8px 0}.layout{display:block;max-width:none;padding:0}.hero{padding:22px 0}.hero h1{font-size:38pt}.hero-grid{display:block}.hero-note{display:none}.section{padding:20px 0;break-inside:auto}h2,h3,h4{break-after:avoid}tr,.panel,.callout,.phase,.state-card{break-inside:avoid}.diagram{break-inside:avoid}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:8pt;color:#182e26;background:#f0f3eb}.decision{background:#eef3e7;color:#20332e}.decision .eyebrow,.decision code{color:#20332e}.sim{color:#20332e;background:#eef3e7;break-inside:avoid}.sim p,.sim .eyebrow,.sim-state dt{color:#435a4b}.sim-log{background:white;color:#20332e;height:auto;max-height:160px}.sim-log em{color:#7a422d}.table-wrap{overflow:visible}table{min-width:0;font-size:8.5pt}a{color:inherit}details{break-inside:avoid}.meta{font-size:8pt}footer{padding-bottom:0}@page{size:A4;margin:16mm 13mm}}
+  </style>
+</head>
+<body>
+<a class="skip" href="#main">跳至正文</a>
+<div class="topline"></div>
+<header class="masthead"><a class="brand" href="../README.md">PERSONAL ASSISTANT / ENGINEERING</a><span>DESIGN NOTE &nbsp; 001 — FULL DUPLEX</span><button class="print" id="print-document" type="button">打印 / 保存 PDF ↗</button></header>
+<div class="layout">
+  <aside class="sidebar" aria-label="文档导航">
+    <div class="eyebrow">Contents / 阅读导航</div>
+    <nav>
+      <a href="#overview"><b>00</b>设计摘要</a><a href="#continuous-chat"><b>P1</b>第一优先：持续追加对话</a><a href="#use-cases"><b>UC</b>实现效果与 10 个用例</a><a href="#current"><b>01</b>项目现状与证据</a><a href="#architecture"><b>02</b>路线与总体架构</a><a href="#routing"><b>03</b>消息路由与接口</a><a href="#isolation"><b>04</b>三类状态与隔离</a><a href="#steering"><b>05</b>Steering 与安全边界</a><a href="#lifecycle"><b>06</b>生命周期与控制</a><a href="#recovery"><b>07</b>持久化与故障恢复</a><a href="#events"><b>08</b>实时事件与前端</a><a href="#modules"><b>09</b>模块与兼容性</a><a href="#delivery"><b>10</b>实施计划与验收</a><a href="#decisions"><b>11</b>待确认的设计取舍</a><a href="#references"><b>12</b>依据与参考资料</a>
+    </nav>
+    <div class="side-note">状态：待方案确认<br>本次交付：HTML 设计文档<br>实现代码：尚未修改<br><br>可离线阅读，无外部字体、脚本或图表依赖。</div>
+  </aside>
+  <main id="main">
+    <section class="hero" id="overview">
+      <div class="eyebrow">Architecture proposal / SDD · 方案先行</div>
+      <div class="hero-grid"><div><h1>任务持续执行，<br>对话始终在线。<span class="en">Full-duplex<br>Agent Interaction</span></h1><p class="lede">基于现有 Python + Deep Agents / LangGraph，给长任务增加独立的执行生命周期，让聊天、查询进度和任务控制能够同时进行。</p></div><div class="hero-note"><span class="big">3 → 1</span>三类独立状态，<br>每个执行 Thread 一个写入者。<p class="muted">复用 Harness；在执行外围建立任务控制面。</p></div></div>
+      <span class="status">设计提案 · 待确认后实施</span>
+      <div class="meta"><span>PROJECT <b>personal-assistant-agent</b></span><span>BASE <b>main / db3011b</b></span><span>REVIEWED <b>2026-11-02</b></span><span>WINDOW <b>2025-11-02 → 2026-11-02</b></span></div>
+    </section>
+    <div class="decision"><div class="eyebrow">Recommended<br>推荐方案</div><p>保留 <code>create_deep_agent</code> 和既有工具、子代理、上下文管理；增加 <strong>Conversation Controller → Task Manager → 后台 Worker</strong>。单机 MVP 使用持久 SQLite 任务队列及官方 Checkpointer，通过 Middleware 在执行边界应用控制，HTTP 提交与事件订阅独立运行。</p></div>
+    <div class="two">
+      <div class="panel"><div class="index">DELIVERABLE / 交付顺序</div><h3>先持续对话与修正，再补完整闭环</h3><p>P1a 先交付持续聊天、同任务要求合并与边界 Steering；P1b 补齐状态查询、暂停/恢复/取消、多任务并发、断线重连与服务重启恢复。</p></div>
+      <div class="panel"><div class="index">BOUNDARY / 明确语义</div><h3>已收到 ≠ 已生效 ≠ 已停止</h3><p>运行中的工具可能已产生副作用。暂停先进入 PAUSING；取消先进入 CANCELLING。达到约定边界并核实持久状态后才发送最终确认。</p></div>
+    </div>
+
+    <section class="section" id="continuous-chat">
+      <div class="section-label"><span>PRIORITY 1 / CONTINUOUS CONVERSATION &amp; STEERING</span></div><h2>第一优先：持续对话，并合并同一任务的新要求</h2>
+      <p class="section-intro">按用户最新澄清调整首期范围：既要在长任务期间正常聊天，也要让连续消息修正正在执行的同一任务。持续输入、上下文路由、要求合并和边界 Steering 一起交付。本轮只修改设计文档，尚未开始修改实现代码。</p>
+      <div class="decision"><div class="eyebrow">FIRST DELIVERY<br>第一项交付</div><p>任务 A 运行时，输入框仍然可以发送。<strong>与 A 有关的补充或修正合并到 A 的最新要求；独立问题进入普通聊天。</strong>原 Deep Agent Loop 保留，不因收到消息而取消重启。后续第三句、第四句继续按上下文关联，任务结果以交付前已接收并应用的最新要求为准。</p></div>
+      <div class="callout green"><strong>核心例子：搜索全球新闻 → 就搜索国内的就好了 → 最终交付国内新闻。</strong>第二句是对同一新闻任务的范围修正，应自动关联当前任务，无需用户复制第一句、指定 task_id 或另开任务。原始消息仍保留，生效目标更新为“搜索国内新闻”。已发出的全球查询可能返回；返回内容按国内范围筛选，不足时补搜，不继续按全球目标交付。</div>
+      <h3>同一聊天内，新消息如何处理</h3>
+      <div class="table-wrap"><table><thead><tr><th>追加内容</th><th>完整方案中的处理</th><th>第一项交付的边界</th></tr></thead><tbody>
+        <tr><td>普通聊天<br>“红眼航班是什么意思？”</td><td>进入独立聊天通道，不等待后台长任务完成，也不把旧任务计划作为本条聊天的待执行清单。</td><td><span class="tag green">优先交付</span> 保留上下文问答，普通聊天不执行文件写入、预订或子代理任务。</td></tr>
+        <tr><td>继续追问上一句聊天<br>“那带小孩适合坐吗？”</td><td>如果上一条聊天还在回复，先显示“等待上一条聊天回复”，按接收顺序处理；回复时纳入此前已完成的聊天内容。</td><td><span class="tag green">优先交付</span> 排队只等待本聊天通道，不等待任务 A；输入框始终可用，有界队列满时明确提示。</td></tr>
+        <tr><td>查询任务进度<br>“任务 A 做到哪了？”</td><td>读取真实任务快照，快速返回当前步骤、工具与最近进展。</td><td>完整结构化 STATUS 随任务管理交付。早期聊天只能引用已有的公开进度，不能编造新进展。</td></tr>
+        <tr><td>追加约束 / 修改方向<br>“就搜索国内的就好了。”<br>“预算改成 3000 元。”</td><td>依据会话上下文识别为当前任务修正，进入该任务的 STEER 控制日志；合并要求，在安全边界应用，再告知生效。</td><td><span class="tag green">优先交付</span> 与持续聊天一起验收，不推迟到后续阶段。目标明确时自动关联；存在多个合理目标时询问。</td></tr>
+        <tr><td>发起另一项执行任务<br>“再后台整理一份资料。”</td><td>创建 B，按执行槽并发或排队，与 A 独立。</td><td>完整多任务并发随 Task Manager 交付；持续聊天不等于允许任意多个工具执行流同时写共享工作区。</td></tr>
+        <tr><td>暂停 / 恢复 / 取消 A</td><td>关联 A，经过控制状态机与安全边界确认。</td><td>随任务控制交付。第一项交付只保留各条回复独立的“停止本条回复”入口，不把它称为可恢复的持久任务取消。</td></tr>
+      </tbody></table></div>
+      <h3>“持续追加”与“并行回复”的规则</h3>
+      <ol class="steps">
+        <li><div><strong>接收不等待长任务。</strong>点击发送或按 Enter 后，立即在同一会话显示新问题及对应的“回复中 / 等待回复”占位。发送按钮始终表示发送，停止操作放到具体回复上。</div></li>
+        <li><div><strong>先判断是否属于同一任务。</strong>Controller 结合消息内容、会话上下文及任务引用，区分任务修正与独立聊天。“只搜国内”修改新闻任务；“顺便解释什么是红眼航班”独立回复。任务修正更新 A 的要求，普通聊天不接管 A 的 tools、todos 或执行历史。</div></li>
+        <li><div><strong>普通聊天有序，任务修正独立处理。</strong>同一会话只生成一条普通聊天回复；后续聊天进入有界 FIFO。STEER 不排在聊天模型回复之后等待，接收后进入控制通道，供 A 下一安全边界读取。</div></li>
+        <li><div><strong>回复始终归属原问题。</strong>用 message_id / in_reply_to 绑定消息；生成上下文以该问题的接收位置为边界，排除未来消息和其他未完成答案。聊天完成后只更新自己的气泡，A 的进度也只更新 A。</div></li>
+        <li><div><strong>失败和停止互不牵连。</strong>停止或出错一条聊天不取消 A；停止 A 的响应流不清空普通聊天。跨会话切换不自动停止执行；刷新、关闭页面与重启后的恢复由后续持久任务能力覆盖。</div></li>
+      </ol>
+      <details open><summary>连续追加的一段完整对话（实现后的预期交互）</summary><div class="table-wrap"><table><thead><tr><th>时刻</th><th>同一会话中的消息 / 动作</th><th>用户看到的效果</th></tr></thead><tbody>
+        <tr><td>①</td><td>用户：“后台整理广州三天旅行方案。”</td><td>A 开始执行；任务计划与工具进度持续更新。</td></tr>
+        <tr><td>②</td><td>A 尚未完成，用户：“红眼航班是什么意思？”</td><td>新问题正常发送并独立回复，A 持续运行。</td></tr>
+        <tr><td>③</td><td>② 还在回复，用户：“那带小孩适合坐吗？”</td><td>消息立即显示，等待②完成后按上下文回答，不等待 A。</td></tr>
+        <tr><td>④</td><td>用户：“预算改成 3000 元。”</td><td>结合当前旅行任务自动关联 A，确认收到 STEER；安全边界合并预算要求并确认生效。普通聊天尚未结束也不会阻塞这条控制。</td></tr>
+        <tr><td>⑤</td><td>A 完成，同时用户还在继续聊天。</td><td>A 的结果进入 A 对应区域；正在进行的聊天保留，后续消息可引用已完成结果。</td></tr>
+      </tbody></table></div></details>
+      <div class="callout green"><strong>第一项交付的完成标准。</strong>既要通过慢任务期间连续聊天，也要通过“全球新闻 → 国内新闻 → 最近三天 → 只看科技”的连续修正，最终有效目标为“搜索最近三天的国内科技新闻”；原任务无取消/重启，未指定的条件保留，独立聊天不影响目标。只解锁输入框、只把消息排到旧任务后面，或仍交付全球新闻，都不算完成。</div>
+    </section>
+
+    <section class="section" id="use-cases">
+      <div class="section-label"><span>10 USER SCENARIOS / EXPECTED OUTCOMES</span></div><h2>全部实现后，可以这样使用</h2>
+      <p class="section-intro">以下 10 个用例把操作、可见效果和边界写在一起，便于后续演示与验收。UC01–UC03、UC05–UC06 属于第一优先级：持续聊天及同任务要求合并；UC04、UC07–UC10 随完整任务管理交付。均为预期效果，尚未实现。新闻检索、旅行等业务例子以相应工具已配置可用为前提。</p>
+      <div class="two">
+        <article class="panel" id="uc-01"><div class="index">UC01 / 第一优先 · A1</div><h3>任务还在跑，顺便聊别的问题</h3><p><strong>用户操作：</strong>让 A 整理旅行方案，看到查询仍在执行，直接在同一输入框问“红眼航班是什么意思？”</p><p><strong>预期效果：</strong>立即出现新的问答气泡，正常解释概念；A 的工具与计划继续更新，完成后另行交付。</p><p><strong>关键边界：</strong>新问题不会变成停止按钮，也不会重新启动 A；这条聊天不继承 A 的未完成计划去继续执行。</p></article>
+        <article class="panel" id="uc-02"><div class="index">UC02 / 第一优先 · A1 / A8</div><h3>一口气追加几句，仍保持上下文</h3><p><strong>用户操作：</strong>A 执行期间先问“红眼航班是什么”，再问“带小孩适合吗”，继续补充“孩子六岁，容易晕车”。</p><p><strong>预期效果：</strong>三条消息都能发送；普通聊天按顺序回复，后续回答能使用前面的解释与补充信息，不等待 A 结束。</p><p><strong>关键边界：</strong>上一条聊天尚未完成时显示等待；不无限并发调用模型。消息队列满时明确提示，不静默丢弃输入。</p></article>
+        <article class="panel" id="uc-03"><div class="index">UC03 / 第一优先 · A4 / A8</div><h3>只停止一条回复，其他执行继续</h3><p><strong>用户操作：</strong>A 与一条普通聊天同时进行，对聊天点击“停止本条回复”；或者该聊天因网络问题失败。</p><p><strong>预期效果：</strong>只结束/标记这条聊天，A 保持运行；其他已接收消息保留，后续仍可继续聊天，各自错误和调用记录独立。</p><p><strong>关键边界：</strong>首期的停止是结束对应响应流，不保证回滚工具副作用，也不宣称能够从 Checkpoint 恢复。</p></article>
+        <article class="panel" id="uc-04"><div class="index">UC04 / 完整任务管理 · A2</div><h3>随时问进度，马上看到真实状态</h3><p><strong>用户操作：</strong>问“任务 A 到哪一步了？”或“所有任务现在怎么样？”</p><p><strong>预期效果：</strong>展示 A 的实际完成步骤、当前工具、最近进展及其他任务状态；执行配额已满也能查询。</p><p><strong>关键边界：</strong>状态查询不排到长任务后面，不要求模型猜测进度；尚无可核验总量时不编造完成百分比。</p></article>
+        <article class="panel" id="uc-05"><div class="index">UC05 / 第一优先 · A3</div><h3>全球新闻改成国内，最终只交付国内新闻</h3><p><strong>用户操作：</strong>先说“帮我搜索全球的新闻”，任务 A 运行中再说“就搜索国内的就好了”。</p><p><strong>预期效果：</strong>自动把第二句关联到 A，将范围由全球替换为国内；确认收到并在安全边界应用，最终结果只列国内新闻。</p><p><strong>关键边界：</strong>全球查询尚未开始时直接按国内搜索；已经发出则等待返回、筛选国内内容并按需补搜。无需取消重跑 A，也不新建第二个搜索任务；若 A 已提交终态，则明确创建基于原结果的修订任务。</p></article>
+        <article class="panel" id="uc-06"><div class="index">UC06 / 第一优先 · A1 / A3</div><h3>连续修正条件，穿插聊天仍能接上任务</h3><p><strong>用户操作：</strong>A 从全球改为国内后，再补充“最近三天的”“只看科技”；中间还可以问“什么叫科技独角兽公司？”</p><p><strong>预期效果：</strong>A 的最新目标合并为“搜索最近三天的国内科技新闻”；普通问题独立回答，随后明确的搜索条件仍关联 A，不丢失前面的国内范围。</p><p><strong>关键边界：</strong>只替换被明确修正的条件，其余保留；保留原始消息和控制记录，已完成资料不删除。多个候选任务或无法判定指代时先询问，不擅自合并。</p></article>
+        <article class="panel" id="uc-07"><div class="index">UC07 / 完整任务管理 · A4</div><h3>先暂停，补充信息后再恢复</h3><p><strong>用户操作：</strong>说“暂停任务 A，我先确认日期”；稍后补充日期并点击恢复。</p><p><strong>预期效果：</strong>先显示“暂停中，等待当前工具/子代理结束”，Checkpoint 保存后显示“已暂停”；恢复后重新排队领取执行槽，继续同一任务。</p><p><strong>关键边界：</strong>暂停不意味着任意工具立刻结束；补充信息本身不自动恢复。当前同步子代理需先收敛完成，再在主图暂停。</p></article>
+        <article class="panel" id="uc-08"><div class="index">UC08 / 完整任务管理 · A4 / A7</div><h3>取消任务，并看清已经发生的操作</h3><p><strong>用户操作：</strong>任务 A 正在写文件或发送已授权预订请求时，点击“取消任务 A”。</p><p><strong>预期效果：</strong>禁止继续发起新操作，显示“取消中”；运行中操作结算后进入“已取消”，列明已保存文件、已确认结果或待核对操作。</p><p><strong>关键边界：</strong>取消 Agent 不等于取消订单或回滚文件；结果不明的请求不自动重复发送。需要继续时创建引用既有成果的新任务。</p></article>
+        <article class="panel" id="uc-09"><div class="index">UC09 / 完整任务管理 · A5</div><h3>两个任务并行，第三个排队</h3><p><strong>用户操作：</strong>同一会话先启动 A 整理路线、B 整理资料，再提交 C；分别查看或调整 A、B。</p><p><strong>预期效果：</strong>默认两个执行槽下 A、B 并发，C 显示排队；仍可聊天。任务计划、工具进度、结果和文件按任务区分，不相互覆盖。</p><p><strong>关键边界：</strong>两个任务可以各自写自己的 result.txt；需要共用同一成果时通过明确引用与冲突规则处理，不让共享目录任意并发写入。</p></article>
+        <article class="panel" id="uc-10"><div class="index">UC10 / 完整任务管理 · A6 / A7 / A8</div><h3>刷新、断网或服务重启后接着处理</h3><p><strong>用户操作：</strong>A 执行中刷新页面，或网络短暂中断；服务重启后再次打开会话。</p><p><strong>预期效果：</strong>重新加载服务端任务快照与遗漏事件；安全任务从持久现场续跑，已暂停任务仍保持暂停，结果通知不会重复出现。</p><p><strong>关键边界：</strong>重启不等于所有任务无条件重试；外部写操作结果未知时显示“需要核对后恢复”，避免重复预订或重复写入。</p></article>
+      </div>
+      <p class="small muted">用例中的 A1–A8 对应<a href="#delivery">第 10 节验收矩阵</a>；UC 编号可作为后续端到端演示脚本编号。仅完成第一优先级时，不将其余用例标记为已通过。</p>
+    </section>
+
+    <section class="section" id="current">
+      <div class="section-label"><span>01 / CURRENT SYSTEM</span></div><h2>项目已有一套可复用的 Harness</h2>
+      <p class="section-intro">以下来自本地源码、<code>uv.lock</code> 和已安装包元数据的只读核验。不是从 README 推断已实现能力；本轮未运行真实模型、供应商交易或完整回归。</p>
+      <div class="table-wrap"><table><caption>依赖：锁文件与 .venv 安装版本一致；Python 声明要求 ≥ 3.13</caption><thead><tr><th>组件</th><th>锁定 / 安装版本</th><th>与方案有关的能力</th></tr></thead><tbody>
+        <tr><td>Deep Agents</td><td><code>0.7.32</code></td><td>原生 Agent Loop、文件工具、task 子代理、Middleware、Checkpointer 注入；另有异步子代理能力，但现项目未接入。</td></tr>
+        <tr><td>LangGraph / Checkpoint</td><td><code>1.2.18 / 4.3.1</code></td><td>astream、checkpoint、interrupt / Command、同步 durability、RunControl 协作收敛。</td></tr>
+        <tr><td>LangChain / Core / OpenAI</td><td><code>1.4.7 / 1.7.0 / 1.7.3</code></td><td>before_model、after_model、模型及工具 wrapper；既有预算与交付校验均依赖这些扩展点。</td></tr>
+        <tr><td>FastAPI / Starlette / Uvicorn</td><td><code>0.162.0 / 1.10.0 / 0.54.0</code></td><td>异步路由、应用 lifespan、StreamingResponse，可直接承载提交接口和 SSE。</td></tr>
+        <tr><td>Agent Server / SDK</td><td><code>0.16.8 / 0.4.10</code></td><td>现有可选部署入口与开发依赖；普通 Docker/FastAPI 路径并未由 Server 调度。</td></tr>
+        <tr><td>SQLite Checkpointer</td><td><span class="tag rust">未锁定 / 未安装</span></td><td>实施需新增官方 <code>langgraph-checkpoint-sqlite</code> 并锁定兼容版本；不自行实现 Checkpointer。</td></tr>
+      </tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>现有链路</th><th>实际行为与代码证据</th><th>改造结论</th></tr></thead><tbody>
+        <tr><td>HTTP → Agent</td><td><a href="../../src/personal_assistant_agent/api/chat.py">api/chat.py:14</a> 直接遍历 <code>ChatService.stream</code>；<a href="../../src/personal_assistant_agent/services/chat.py">services/chat.py:183</a> 在请求流内执行 <code>agent.astream</code>。</td><td>拆开提交、Worker 驱动、结果订阅；不把请求协程当后台任务的所有者。</td></tr>
+        <tr><td>前端单任务</td><td><a href="../../src/personal_assistant_agent/static/js/app.js">static/js/app.js:10, 316, 412</a> 只有全局 <code>job</code>；运行时提交触发停止，停止调用 AbortController；切换新会话也停止生成。</td><td>聊天发送状态与任务状态分开；取消某个任务必须调用控制接口。</td></tr>
+        <tr><td>请求级图状态</td><td><a href="../../src/personal_assistant_agent/services/chat.py">services/chat.py:124, 184</a> 每次重传 messages / todos，config 没有持久 <code>thread_id</code>；<a href="../../src/personal_assistant_agent/agents/assistant.py">agents/assistant.py:479</a> 没有传 checkpointer。</td><td>当前是请求隔离，不是执行状态恢复；新任务用独立 Thread 与增量输入。</td></tr>
+        <tr><td>Agent 能力</td><td><a href="../../src/personal_assistant_agent/agents/assistant.py">agents/assistant.py:400–495</a> 包含 Deep Agents、TodoList、调用上限、计划提交与交付检查；profile 给 general-purpose 子代理安装上下文管理。</td><td>保留全部能力，控制通过 Middleware 接入，不替换执行循环。</td></tr>
+        <tr><td>上下文与消息协议</td><td><a href="../../src/personal_assistant_agent/agents/context.py">agents/context.py:106, 392, 437</a> 继承压缩、归档、工具配对、预算和工具选择；多处基于“最新 HumanMessage”判断任务。</td><td>Steering 不能随意追加成新任务消息；需统一有效任务视图，并纳入 Token 预算。</td></tr>
+        <tr><td>文件与外部副作用</td><td><a href="../../src/personal_assistant_agent/agents/workspace.py">agents/workspace.py:24</a> 工作区共享；<a href="../../src/personal_assistant_agent/agents/calendar_tools.py">calendar_tools.py:60</a> ICS 使用随机 ID；<a href="../../src/personal_assistant_agent/agents/travel_tools.py">travel_tools.py:85, 349–417</a> 预订已有 CAS、确认与 UNKNOWN 防重机制。</td><td>任务独立目录，ICS 增加稳定操作 ID；保留并衔接现有预订台账，不能统一粗暴重试。</td></tr>
+        <tr><td>事件与观测</td><td><a href="../../src/personal_assistant_agent/services/chat.py">services/chat.py:151–325</a> 已有 meta / plan / tool / trace / usage / delta / done / error；<a href="../../src/personal_assistant_agent/observability/timeline.py">timeline.py:324</a> 复用队列多路输出回调，但没有持久事件日志。</td><td>提取事件转换器，复用脱敏与成本追踪；加任务标识、序号和可重放日志。</td></tr>
+        <tr><td>部署与测试</td><td><a href="../../src/personal_assistant_agent/deployment/web.py">deployment/web.py</a> 显式列出自定义路由；<a href="../../tests/test_service.py">test_service.py:43</a> 验证取消传递，但未验证持久恢复；<a href="../../tests/test_agent.py">test_agent.py:106</a> 已有真实 Graph + 假模型的子代理测试。</td><td>增加路由时同步适配部署入口；在现有测试基础上扩展竞争、控制和崩溃矩阵。</td></tr>
+      </tbody></table></div>
+      <div class="callout green"><strong>范围假设：沿用当前单用户、本地可信文件系统的产品边界。</strong>本方案提供会话/任务关联校验，不把 UUID 当成多租户权限。新增数据库与 Checkpoint 位于 Agent 工作区外，权限沿用私有目录 0700 / 文件 0600。多用户 ACL 不是本次新增能力。</div>
+    </section>
+
+    <section class="section" id="architecture">
+      <div class="section-label"><span>02 / ARCHITECTURE</span></div><h2>控制面独立，执行仍由 Deep Agents 驱动</h2>
+      <p>这里的全双工指应用层可同时接收消息和推送任务事件。<strong>HTTP POST + SSE 已满足目标</strong>，无需为“全双工”额外引入 WebSocket、Celery、Redis 或第二层 LangGraph 工作流。</p>
+      <figure class="diagram"><svg viewBox="0 0 900 540" role="img" aria-labelledby="arch-title arch-desc"><title id="arch-title">全双工 Agent 组件架构</title><desc id="arch-desc">浏览器向 Conversation Controller 提交消息。聊天独立回复，任务控制进入 Task Manager 和持久队列，由限流 Worker 执行现有 Deep Agent。结果写入事件日志，经 SSE 推送给浏览器。</desc><defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10Z" fill="#547464"/></marker></defs>
+        <rect class="area" x="334" y="251" width="540" height="177" rx="3"/><text class="sublabel" x="351" y="273">BACKGROUND EXECUTION · 独立任务 Thread / 单一写入者</text>
+        <rect class="node" x="25" y="31" width="184" height="72" rx="3"/><text class="label" x="44" y="61">Browser / Conversation UI</text><text class="sublabel" x="44" y="82">聊天输入 · 多任务面板 · SSE</text>
+        <rect class="core" x="302" y="31" width="245" height="72" rx="3"/><text class="label on-dark" x="322" y="61">Conversation Controller</text><text class="sublabel on-dark" x="322" y="82">分类 / 关联目标 / 幂等接收</text>
+        <rect class="node" x="641" y="31" width="230" height="72" rx="3"/><text class="label" x="660" y="61">Chat Responder</text><text class="sublabel" x="660" y="82">独立交互预算 · 不等待后台任务</text>
+        <path class="arrow" d="M209 66H302"/><text class="sublabel" x="230" y="52">POST</text><path class="arrow" d="M547 66H641"/><text class="sublabel" x="570" y="52">CHAT</text>
+        <rect class="core" x="302" y="151" width="245" height="72" rx="3"/><text class="label on-dark" x="322" y="181">Task Manager</text><text class="sublabel on-dark" x="322" y="202">状态机 · 领取 · 控制 · 恢复</text><path class="arrow" d="M424 103V151"/><text class="sublabel" x="440" y="132">NEW_TASK / CONTROL / STATUS</text>
+        <rect class="node" x="641" y="151" width="230" height="72" rx="3"/><text class="label" x="660" y="181">TaskStore / SQLite</text><text class="sublabel" x="660" y="202">任务 · 控制日志 · 事件 · 副作用台账</text><path class="arrow" d="M547 186H641"/>
+        <rect class="node" x="358" y="298" width="196" height="89" rx="3"/><text class="label" x="378" y="330">Agent Worker × N</text><text class="sublabel" x="378" y="353">领取任务 / 持有执行租约</text><text class="sublabel" x="378" y="370">持续消费 astream</text><path class="arrow" d="M424 223V298"/>
+        <rect class="core" x="601" y="298" width="249" height="89" rx="3"/><text class="label on-dark" x="620" y="329">Existing Deep Agent Harness</text><text class="sublabel on-dark" x="620" y="351">Middleware · Tools · Subagents</text><text class="sublabel on-dark" x="620" y="370">上下文压缩 / 预算 / 计划 / 交付校验</text><path class="arrow" d="M554 341H601"/>
+        <rect class="node" x="601" y="457" width="249" height="60" rx="3"/><text class="label" x="620" y="483">Official Checkpointer</text><text class="sublabel" x="620" y="501">Execution State · checkpoints.sqlite3</text><path class="arrow" d="M726 387V457"/>
+        <rect class="node" x="25" y="298" width="231" height="89" rx="3"/><text class="label" x="45" y="330">Event Adapter + Event Log</text><text class="sublabel" x="45" y="353">提交后再推送 / 游标重放</text><text class="sublabel" x="45" y="370">慢订阅者断连，不阻塞 Worker</text><path class="arrow" d="M358 341H256"/><path class="arrow" d="M116 298V103"/><text class="sublabel" x="131" y="210">SSE</text>
+        <path class="arrow dashed" d="M756 223V262H527V298"/><text class="sublabel" x="42" y="472">持久队列是事实来源；asyncio.Event 只负责唤醒。</text><text class="sublabel" x="42" y="494">客户端断线不会取消后台任务。</text>
+      </svg><figcaption>图 1 · 新增外围调度与交互层。Deep Agent 继续拥有模型—工具循环；Worker 只负责生命周期与流消费。</figcaption></figure>
+      <div class="table-wrap"><table><thead><tr><th>候选路线</th><th>适用依据</th><th>局限 / 结论</th></tr></thead><tbody>
+        <tr><td>A · FastAPI 内嵌任务运行时<br><span class="tag green">首期推荐</span></td><td>现有独立部署即可使用；官方 Middleware、Checkpointer 和 Interrupt 已在锁定版本中可用。</td><td>首期限定一个服务进程、一个 Task Manager，小并发、单机持久卷。应用只补充业务任务状态与控制，不重造图执行引擎。</td></tr>
+        <tr><td>B · Agent Server / AsyncSubAgent<br><span class="tag">后续适配</span></td><td>库已支持 start/check/update/cancel，项目也有部署入口，后续可复用 Server 执行设施。<a href="https://docs.langchain.com/oss/python/deepagents/async-subagents">官方说明</a></td><td>AsyncSubAgent 更新默认 interrupt 旧 run 并启动新 run；enqueue 则等待旧 run。两者都不直接提供本次同一次执行的边界 Steering。迁移部署也不能替代三类状态隔离。</td></tr>
+      </tbody></table></div>
+      <p class="small muted">参考产品只用于核对交互语义：OpenClaw 文档区分 steer 与 interrupt，并说明运行中的工具先结束、下一模型决策前应用指令。其实现不能直接移植为 Python Harness，也不能据此推断 ChatGPT dots 的内部架构。<a href="https://docs.openclaw.ai/concepts/queue">OpenClaw Command queue</a></p>
+      <h3>首期运行边界</h3>
+      <ul>
+        <li>默认后台任务并发 <code>N=2</code>，有限队列；另留交互模型通道。模型与工具还有全局限流，防止子代理把并发预算放大。数字为提案配置，实施压测后校准。</li>
+        <li>数据库使用 WAL、短事务、busy timeout；数据库 I/O 使用异步驱动或专用线程，不在事件循环内执行阻塞 SQLite 操作。磁盘满/写入失败时拒绝新任务，不返回虚假的“已接收”。</li>
+        <li>单实例所有权锁保证只有一个进程拥有调度器；多 worker Uvicorn 配置应启动失败并说明限制。租约与 fencing token 用于防重复领取，但不能单独阻止旧进程的 Checkpointer 写入。</li>
+        <li>若必须多实例部署，或写入争用使延迟目标持续失败，再评估 Agent Server / PostgreSQL 适配。不是先引入分布式队列再寻找用途。</li>
+      </ul>
+    </section>
+
+    <section class="section" id="routing">
+      <div class="section-label"><span>03 / ROUTING &amp; CONTRACTS</span></div><h2>消息先确定用途，再确定目标</h2>
+      <p>显式 UI 动作和命令优先；自然语言结合会话上下文进行受限结构化分类，返回候选意图、目标与修改内容，由 Controller 校验后提交。<strong>语义明确的同任务补充应自动合并到当前任务，独立问题进入 CHAT；不能把所有新消息一律当作闲聊或一律注入任务。</strong></p>
+      <div class="table-wrap"><table><thead><tr><th>类型</th><th>例子</th><th>目标与行为</th></tr></thead><tbody>
+        <tr><td><code>CHAT</code></td><td>“顺便解释一下时差。”</td><td>语义上独立的普通问答；读会话与任务摘要，独立回复。先识别与当前任务有关的修正，不因省略 task_id 就降为 CHAT。</td></tr>
+        <tr><td><code>NEW_TASK</code></td><td>“后台整理广州三天旅行方案。”</td><td>创建 task_id 与 execution_thread_id，提交后立即返回；不等待 Agent 完成。</td></tr>
+        <tr><td><code>STATUS</code></td><td>“任务 A 到哪一步了？”</td><td>直接读 TaskStore 的状态、真实 todos、当前工具和 last_progress_at。默认不调用执行 Agent，不伪造完成百分比。</td></tr>
+        <tr><td><code>STEER</code></td><td>“就搜索国内的就好了。”<br>“任务 A 预算改为 3000 元。”</td><td>结合上下文关联正在搜索新闻的任务或显式目标；追加持久控制记录并合并要求，在安全边界应用。保留当前任务、Thread 与成果。</td></tr>
+        <tr><td><code>PAUSE</code></td><td>“暂停任务 A。”</td><td>写入暂停意图，进入 PAUSING；已在运行的操作按约定收敛，之后 durable pause。</td></tr>
+        <tr><td><code>RESUME</code></td><td>“恢复任务 A。”</td><td>只对可恢复状态有效；唯一 Worker 从相应 checkpoint / interrupt 恢复。</td></tr>
+        <tr><td><code>CANCEL</code></td><td>“取消任务 A。”</td><td>阻止新工作、处理 in-flight 工具并结束任务。任务取消不代表订单取消或文件回滚。</td></tr>
+      </tbody></table></div>
+      <div class="callout"><strong>关联规则必须确定，也要允许自然接话。</strong>优先显式 task_id → 回复关联的任务卡片 → 用户选中的任务。无显式目标时，结合指令语义与上下文确定唯一匹配的活跃任务：“只搜国内”可关联当前新闻搜索；一个活跃任务的存在本身不足以把无关聊天归给它。多个合理候选或指代不清时返回候选并询问，不广播。聊天中插入普通问题不会清除任务关联线索。所有目标都必须属于请求所指会话/当前用户范围。</div>
+      <h3>同任务要求合并：原始记录保留，执行目标更新</h3>
+      <p>合并不是把两句互相冲突的话直接拼接给模型。Controller 只归一化用户意图，不替代 Deep Agent 规划执行：按消息接收序号生成修订，保存来源和被替换条件。原始目标与消息作为历史保留；<code>effective_task_request</code> 表示当前生效要求。相同条件由最新明确修正覆盖，未提及条件保持，新增条件追加。</p>
+      <div class="table-wrap"><table><thead><tr><th>收到的消息</th><th>合并动作</th><th>当前任务要求</th></tr></thead><tbody>
+        <tr><td>“帮我搜索全球新闻。”</td><td>建立原始任务：新闻搜索，范围=全球。</td><td>搜索全球新闻。</td></tr>
+        <tr><td>“就搜索国内的就好了。”</td><td>范围=国内，明确替换原全球范围。</td><td>搜索国内新闻。</td></tr>
+        <tr><td>“最近三天的。”</td><td>追加时间=最近三天，保留范围。</td><td>搜索最近三天的国内新闻。</td></tr>
+        <tr><td>“顺便解释一下什么是科技独角兽。”</td><td>独立 CHAT，不更改搜索条件。</td><td>仍为最近三天的国内新闻。</td></tr>
+        <tr><td>“新闻只看科技。”</td><td>追加主题=科技，保留范围与时间。</td><td>搜索最近三天的国内科技新闻。</td></tr>
+        <tr><td>“改成最近一周。”</td><td>时间=最近一周，替换原时间条件。</td><td>搜索最近一周的国内科技新闻。</td></tr>
+      </tbody></table></div>
+      <p class="small">“国内”的归属使用已知用户地域或会话约定；本例明确指中国大陆。若地域或条件含义无法确定，先澄清。修订只改变用户任务目标，不新增工具权限或替代预订等独立授权。</p>
+      <h3>修正到达的不同时刻，如何影响执行</h3>
+      <div class="table-wrap"><table><thead><tr><th>修正到达时刻</th><th>执行处理</th><th>用户最终看到什么</th></tr></thead><tbody>
+        <tr><td>任务已提交，查询尚未发出</td><td>下一模型/工具边界合并国内范围，拦截尚未开始的旧范围调用。</td><td>按国内范围搜索并交付，不需要先完成全球任务。</td></tr>
+        <tr><td>全球查询正在执行</td><td>确认收到修正，当前 Tool 可先返回；下一决策按国内范围筛选，信息不足时补搜。后续未启动的旧范围工作不再执行。</td><td>最终只交付国内新闻；不把已收到指令说成正在运行的全球查询已被撤回。</td></tr>
+        <tr><td>已有全球资料，最终结果尚未提交</td><td>复核 requirement revision，保留已有资料作为历史，按新范围重整交付；无关中间预览标注被修订。</td><td>当前最终结果为国内新闻，不把旧范围草稿当作本次完成结果。</td></tr>
+        <tr><td>原任务已经提交终态</td><td>原任务不再接受 STEER，创建有 source_task_id 的修订任务并明确反馈；已有结果保持历史记录。</td><td>新任务按国内范围交付新版本，不声称过去已交付的全球结果被自动改写。</td></tr>
+      </tbody></table></div>
+      <h3>新增接口（提案）</h3>
+      <div class="table-wrap"><table><thead><tr><th>接口</th><th>契约</th></tr></thead><tbody>
+        <tr><td><code>POST /api/conversations/{id}/messages</code></td><td>输入 client_message_id、content、可选 intent / target_task_id；返回持久消息 ID、路由结果及 task/control ID。CHAT 也提交后订阅回复，Controller 不持锁等待模型。</td></tr>
+        <tr><td><code>GET /api/conversations/{id}/tasks</code><br><code>GET /api/tasks/{task_id}</code></td><td>返回状态快照、revision、控制确认、真实进度与恢复条件。通过 conversation_id 关联校验。</td></tr>
+        <tr><td><code>POST /api/tasks/{task_id}/controls</code></td><td>输入 control_id、type、content、expected_revision；事务内校验状态并持久入队，返回 202 RECEIVED。相同幂等键与相同内容返回原结果；同键异内容 409。</td></tr>
+        <tr><td><code>GET /api/conversations/{id}/events</code></td><td>SSE，多任务复用一条订阅；支持 Last-Event-ID / after 游标，心跳、重连与快照回补。连接关闭只结束订阅。</td></tr>
+        <tr><td><code>POST /api/chat</code><br><span class="tag">保留</span></td><td>旧请求体、NDJSON 事件和停止生成行为保持兼容；新增任务能力走新接口。旧 CHAT 执行仍受资源限额及共享文件互斥保护。</td></tr>
+      </tbody></table></div>
+      <details><summary>请求与接收确认示例</summary><pre><code>POST /api/tasks/task-A/controls
+{
+  "control_id": "client-generated-uuid",
+  "type": "STEER",
+  "content": "预算不超过 3000 元，已完成的路线资料保留",
+  "expected_revision": 7
+}
+
+202 Accepted
+{
+  "task_id": "task-A",
+  "control_id": "client-generated-uuid",
+  "control_seq": 3,
+  "status": "RECEIVED",
+  "task_revision": 8
+}</code></pre><p>任务最终结果、控制生效时间和当前工具结算状态通过后续事件告知；202 不声称指令已经改变正在运行的 Tool。</p></details>
+      <p class="small">Chat Responder 使用相同模型配置与预算设施，拥有单独的对话执行锁；可复用选定的只读工具。普通聊天不接手后台任务的 tools/todos 状态。显式状态/控制请求不依赖 LLM 可用性，模型服务繁忙时仍能工作。</p>
+    </section>
+
+    <section class="section" id="isolation">
+      <div class="section-label"><span>04 / STATE OWNERSHIP</span></div><h2>三类状态，各自有明确所有者</h2>
+      <div class="three">
+        <div class="panel"><div class="index">01 / CONVERSATION STATE</div><h3>面向用户的对话</h3><p>messages、任务引用、结果通知、事件游标、conversation revision。Controller 负责追加与排序；任务完成只追加通知，不改写聊天模型的执行上下文。</p></div>
+        <div class="panel"><div class="index">02 / EXECUTION STATE</div><h3>Agent 的执行现场</h3><p>完整模型/工具消息、todos、摘要、计数、directive revision、applied cursor、checkpoint namespace。由 LangGraph Checkpointer 保存；只有当前 Worker 可调用执行/恢复/更新 API。</p></div>
+        <div class="panel"><div class="index">03 / TASK STATE</div><h3>任务的业务生命周期</h3><p>状态、意图、租约、attempt、超时预算、进度快照、控制日志、结果引用、副作用状态。由 Task Manager 通过事务和 CAS 管理；不是另一份 Agent 历史。</p></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>冲突点</th><th>约束与实现策略</th></tr></thead><tbody>
+        <tr><td>同一 Thread 双写</td><td>每任务独立 <code>execution_thread_id</code>，不等于 conversation_id。Task Manager 唯一领取 + Worker 持锁；API 不并发调用 <code>agent.astream / aupdate_state</code>。恢复前确认旧 Worker 已结束。</td></tr>
+        <tr><td>普通聊天与后台执行</td><td>Conversation 的消息锁只保护短事务；模型生成持单独的交互锁，绝不持 Conversation DB 锁。结果通知可并行入库，按 message/event sequence 排序。</td></tr>
+        <tr><td>同一任务的并行分支</td><td>使用 LangGraph 自带子图 namespace 与 reducers；每个执行分支记录自己的 control cursor。控制日志采用可重读序列，不让一个子代理“抢走”其他分支的新指令。</td></tr>
+        <tr><td>工作区共享</td><td>新任务默认使用 <code>workspace/tasks/{task_id}/</code>，同任务子代理继承同一目录；旧聊天沿用现有根目录。跨任务成果通过显式 artifact 引用导入。文件写入需规范化路径 + 资源互斥；根目录旧工具与任务目录重叠时也必须互斥。</td></tr>
+        <tr><td>闭包捕获与全局 profile</td><td>现有 backend、tools、ContextWindowMiddleware 都捕获 settings/workspace。增加按执行作用域构建的 AgentFactory，不复用绑错目录的工具闭包；保留已有 <code>_BUILD_LOCK</code>，避免 profile 注册和并发构图串用后端。</td></tr>
+        <tr><td>日历与预订归属</td><td>日历下载要从 artifact index 定位任务文件，保留旧 URL；新预订授权绑定 conversation + task + quote + control/turn，恢复时重新校验，不能把旧确认长期放进 configurable 后重复使用。</td></tr>
+      </tbody></table></div>
+      <div class="callout green"><strong>Checkpoint 只保存图状态，不替代外部状态隔离。</strong>文件、预订、模型并发配额、回调收集器都必须检查作用域。即使两个任务使用不同 thread_id，也不能同时无锁覆盖同一个文件。</div>
+    </section>
+
+    <section class="section" id="steering">
+      <div class="section-label"><span>05 / MID-RUN STEERING</span></div><h2>在下一次决策前，让新约束成为执行上下文</h2>
+      <p>Steering 使用<strong>持久控制日志 + Middleware</strong>，继续同一次 Agent 执行。它不调用 task.cancel，不替换 execution_thread_id，也不以取消重启模拟实时交互。正常 Steering 可以促使 Agent 重规划，但保留已经完成的事实与成果。</p>
+      <ol class="steps">
+        <li><div><strong>持久接收。</strong>Controller 校验目标、revision 与幂等键；在同一事务内写 controls、task revision 和 control.received 事件，随后唤醒 Worker。</div></li>
+        <li><div><strong>安全边界读取。</strong><code>abefore_model</code> 读取未应用控制，按 task sequence 得到新 directive revision。<code>aafter_model</code> 再检查一次，覆盖模型调用期间新到达的指令与终态竞争。</div></li>
+        <li><div><strong>合并用户级要求。</strong>执行状态保存结构化 directives、稳定 control_id 和 requirement revision。最新明确修正替换冲突条件，其余条件保留；生成有效任务视图供模型、工具选择和交付校验共用。原始目标作为历史保留，但不要求模型继续遵守已被替换的“全球范围”；用户文本不提升为系统授权。</div></li>
+        <li><div><strong>防止陈旧工具继续。</strong>工具 wrapper 在实际启动前检查取消/暂停意图和 planning revision。Steering 已到达而本次工具计划仍基于旧 revision 时，未启动调用返回配对的“因新约束推迟”ToolMessage，下一模型边界重新决策；已启动调用按原语义结算。</div></li>
+        <li><div><strong>Checkpoint 后确认。</strong>applied cursor / directives 由图返回状态更新并持久化。Worker 从 checkpoint 事件或显式读取核实后，写 control.applied。崩溃后以 checkpoint cursor 补发确认，不永久破坏性出队。</div></li>
+      </ol>
+      <h3>与现有 Middleware 的衔接</h3>
+      <ul>
+        <li>控制字段与执行历史分开。不要直接把每条 STEER 当作新的顶层 HumanMessage：现有 plan 初始化、latest-user 判断、工具选择和交付校验可能错误切换任务或重置计数。</li>
+        <li>增加统一 <code>effective_task_request</code> 视图：原始任务 + 有序追加/替换约束。约束作为有来源的用户内容进入模型请求，并参与 token preflight；压缩后仍从持久字段恢复生效约束，不能只依赖历史摘要“记住它”。</li>
+        <li>在每个尚未提交的最终结果上执行 revision 屏障：若已有已接受的修正尚未应用，不提交旧版本成功结果，先应用修正并继续决策。Controller 接收修正与任务终态提交通过同一任务 revision 仲裁；终态先提交时明确转为新修订任务。</li>
+        <li>“预算改为 3000”是有序约束更新；“保留已完成成果”保持现有不可改写记录。互相冲突且无法确定的新旧要求标为需要澄清，不让模型自行扩大授权。</li>
+        <li>General-purpose 子代理不会自动继承任意主 Middleware。通过现有 <code>HarnessProfile.extra_middleware</code> 安装控制读取和工具 gate，或者显式配置；暂停节点仅用于主 Agent，避免子代理与并行 ToolNode 内直接 interrupt。</li>
+        <li>每个活跃分支独立记录 applied cursor。事件带 namespace 与 revision；分支生效先展示分支确认，全任务“已应用”仅在当前活跃分支均已采用或已结束后给出。新启动分支从最新已接收约束初始化。</li>
+      </ul>
+      <div class="table-wrap"><table><thead><tr><th>机制</th><th>用途</th><th>不应混淆的语义</th></tr></thead><tbody>
+        <tr><td>控制日志 + Middleware</td><td>在模型/工具执行边界读取新增约束，更新同一执行。</td><td>STEER 通常不需要 Interrupt，也不等待另一个用户回复才能继续。</td></tr>
+        <tr><td><code>interrupt()</code><br><code>Command(resume=...)</code></td><td>可持久挂起并等待外部输入。首期用于主 Agent 的用户暂停；保留作为既有人审/HITL 扩展点。</td><td>这是节点内部主动让出执行，不是从 HTTP 请求强行打断 Tool。恢复会重跑节点开头，必须稳定命中同一个 interrupt。</td></tr>
+        <tr><td><code>RunControl.request_drain()</code></td><td>锁定版本已有原生 superstep 边界收敛，优先用于优雅停机，分类处理 GraphDrained。</td><td>它不向模型注入 Steering，也不等同 Command(resume)。收敛后的普通 checkpoint 用 <code>astream(None, ...)</code> 继续；每次执行/恢复创建新的 RunControl，不能复用已 drain 的实例。嵌套子图路径需专项验证。</td></tr>
+        <tr><td><code>asyncio.Task.cancel()</code></td><td>显式取消时，对可合作终止的模型/只读 HTTP 调用做尽力中止。</td><td>不能撤回已经发出的请求、终止任意同步线程或回滚外部副作用；不能作为 Steering 的常规路径。</td></tr>
+      </tbody></table></div>
+      <div class="callout"><strong>并行工具不是原子事务。</strong>本地 ToolNode 使用 asyncio.gather。某个 wrapper 抛出 interrupt 时，其他工具可能仍在执行。MVP 在主图独立 before_model / after_model 节点暂停，先结算当前工具批次；不在 wrapper 内制造全局 durable pause。Deep Agents 自带悬空工具消息修复可复用，但修补消息不能证明工具没有执行。</div>
+      <div class="sim" id="protocol-demo">
+        <div class="eyebrow">INTERACTIVE SPEC / 纯前端时序演示</div><h3>一条指令，两个确认时刻</h3><p>模拟任务 A 正在执行工具。点击控制，再手动推进到安全边界；期间仍可发送聊天。此演示不连接 Agent、不产生真实任务。</p>
+        <div class="sim-layout"><dl class="sim-state"><dt>TASK A / STATUS</dt><dd id="sim-status">RUNNING · 工具执行中</dd><dt>CONTROL / ACKNOWLEDGEMENT</dt><dd id="sim-control">暂无控制指令</dd><dt>CONTEXT / DIRECTIVE REVISION</dt><dd id="sim-revision">rev 0 · 原始任务约束</dd></dl><ol class="sim-log" id="sim-log" aria-live="polite" aria-label="协议事件记录"><li><em>01</em> tool.started · A</li></ol></div>
+        <div class="sim-controls"><button type="button" data-sim="chat">继续聊天</button><button type="button" data-sim="steer">追加约束</button><button type="button" data-sim="pause">暂停</button><button type="button" data-sim="cancel">取消</button><button class="primary" type="button" data-sim="boundary">到达安全边界 →</button><button type="button" data-sim="resume" disabled>恢复</button><button type="button" data-sim="reset">重置</button></div>
+        <p class="sim-caption">示意仅展示主图边界；真实工具/子代理耗时不固定。终态取消不能直接恢复；普通聊天和查询持续可用。</p>
+      </div>
+    </section>
+
+    <section class="section" id="lifecycle">
+      <div class="section-label"><span>06 / LIFECYCLE</span></div><h2>把“用户意图”与“执行事实”分开</h2>
+      <p><code>desired_action</code> 记录最新合法控制意图，<code>status</code> 记录已经发生的事实。以下是 Task State，不替换 Deep Agent 的内部状态机。</p>
+      <div class="state-grid"><div class="state-card"><b>QUEUED</b><span>已落盘，等待执行槽</span></div><div class="state-card"><b>RUNNING</b><span>Worker 已持有执行权</span></div><div class="state-card"><b>PAUSING</b><span>暂停已接收，等待边界</span></div><div class="state-card"><b>PAUSED</b><span>挂起 checkpoint 已确认</span></div><div class="state-card"><b>WAITING_INPUT</b><span>需用户输入或业务确认</span></div><div class="state-card"><b>CANCELLING</b><span>取消已接收，等待工具收敛</span></div><div class="state-card warn"><b>RECOVERING</b><span>重启后核对执行现场</span></div><div class="state-card warn"><b>RECOVERY_REQUIRED</b><span>结果不明或预算需处理</span></div><div class="state-card end"><b>SUCCEEDED</b><span>已持久保存有效交付</span></div><div class="state-card end"><b>FAILED</b><span>不可自动恢复的失败</span></div><div class="state-card end"><b>CANCELLED</b><span>执行已结束，可保留未知副作用</span></div></div>
+      <div class="table-wrap"><table><thead><tr><th>原状态 / 触发</th><th>目标状态</th><th>完成条件与约束</th></tr></thead><tbody>
+        <tr><td>创建任务</td><td><code>QUEUED → RUNNING</code></td><td>短事务持久入队；唯一 Worker 领取后开始。队列满拒绝；不让等待队列占用模型调用。</td></tr>
+        <tr><td>RUNNING + PAUSE</td><td><code>PAUSING → PAUSED</code></td><td>当前 root 模型/工具批次结算；主图控制节点调用 interrupt，持久 checkpoint 与 interrupt ID 被核实后释放执行槽。</td></tr>
+        <tr><td>QUEUED + PAUSE</td><td><code>PAUSED</code></td><td>尚未启动，无需伪造 checkpoint；记录 resume_mode=initial，恢复后重新排队首次执行。</td></tr>
+        <tr><td>PAUSED + RESUME</td><td><code>QUEUED → RUNNING</code></td><td>等待有限执行槽；已有 interrupt 用匹配 ID 的 Command 恢复，同一 execution_thread_id。仅排队不等于已经恢复运行。</td></tr>
+        <tr><td>RUNNING + 人类输入点</td><td><code>WAITING_INPUT</code></td><td>输入/确认与普通暂停原因分开；RESUME 不得自动批准预订或其他业务审核，必须提供对应用户输入。</td></tr>
+        <tr><td>非终态 + CANCEL</td><td><code>CANCELLING → CANCELLED</code></td><td>未启动任务可直接取消；运行任务禁止新调用，等待实际停止。已暂停任务关闭恢复权，不为取消而先恢复图。</td></tr>
+        <tr><td>运行完成 / 异常</td><td><code>SUCCEEDED / FAILED</code></td><td>完成前再次核对控制 revision；有待应用 STEER 时先处理并重新决策。合法取消优先于尚未提交的成功；提交后的终态不再接受控制。</td></tr>
+        <tr><td>故障或可恢复超时</td><td><code>RECOVERING / RECOVERY_REQUIRED</code></td><td>根据 checkpoint、lease 与 effect ledger 判定自动恢复或人工处理；不把所有异常重试一遍。</td></tr>
+        <tr><td>RECOVERY_REQUIRED + RESUME</td><td><code>QUEUED</code> 或 409</td><td>先核对未知副作用、兼容性和预算条件。条件未解除时拒绝恢复并给具体原因；不能仅靠一个“继续”自动重放订单。</td></tr>
+      </tbody></table></div>
+      <h3>暂停的首期承诺</h3>
+      <p>PAUSE 不强行取消当前工具。正在运行的同步 <code>task</code> 子代理视为一个 in-flight Tool：<strong>允许本次委派及其内部工具收敛完成</strong>，然后在主图下一边界暂停；界面明确显示“暂停中，等待子代理结束”。其他尚未开始的主图工具调用被 gate 推迟。Steering 仍可在子代理模型边界生效；CANCEL 则传播整个任务树的禁止新操作信号。</p>
+      <p>这是稳定 MVP 的显式限制：没有承诺子代理内部立即持久挂起，也没有承诺任意工具的毫秒级中断。若业务要求暂停能在任意子代理内部生效，必须先通过嵌套 checkpoint、并行工具重放与副作用测试，再扩展暂停边界。</p>
+      <details><summary>恢复、控制竞争与重放规则</summary><ul class="small">
+        <li>控制日志按 seq 有序处理；CANCEL 一经接受就封闭执行，后续 RESUME 返回 409。STEER 不自动恢复 PAUSED；在队列中保留到恢复后的下一决策边界。</li>
+        <li>PAUSING 时的 RESUME 记为“挂起后恢复”的意图，先确认暂停 checkpoint，再排队恢复；禁止并发创建第二个 Worker。重复 PAUSE/RESUME 返回已存在的控制结果。</li>
+        <li>保存 pause_epoch、boundary_key 与 interrupt ID。恢复前不要清掉 pause marker；重放时必须走到原 interrupt 并消费 resume 值，之后再提交清除标记。</li>
+        <li>匹配控制类型与 interrupt kind，只恢复指定 ID；不能用通用 resume=true 一并批准其他人工审核。</li>
+        <li>SUCCEEDED / FAILED / CANCELLED 是终态。若用户要继续已取消任务，创建带 source_task_id 的新任务；可显式引用已有成果，不复用被取消 Thread 的待执行操作。</li>
+        <li>终态 CAS 与控制接收共用任务 revision：谁先提交决定结果。终态已提交后到达的控制返回 TASK_ALREADY_TERMINAL，避免“已收到但永不生效”。</li>
+      </ul></details>
+    </section>
+
+    <section class="section" id="recovery">
+      <div class="section-label"><span>07 / PERSISTENCE &amp; RELIABILITY</span></div><h2>恢复执行，也恢复对“不确定”的认识</h2>
+      <p>持久目录建议位于 <code>.assistant-private/runtime/</code>，与可读写工作区分离；TaskStore 与官方 Checkpointer 使用独立数据库连接/文件。Docker 必须挂载私有运行目录和工作区两类持久卷。</p>
+      <div class="table-wrap"><table><thead><tr><th>数据 / 建议最小表</th><th>关键字段与唯一约束</th></tr></thead><tbody>
+        <tr><td>conversations / messages</td><td>conversation_id、message_id、sequence、revision、task_ref；唯一 client_message_id，保存输入指纹防同键异内容。</td></tr>
+        <tr><td>tasks</td><td>task_id、conversation_id、execution_thread_id、status、desired_action、revision、attempt、lease_owner / epoch、heartbeat、remaining_budget、resume_mode、result_ref；并记录 accepted_requirement_seq、applied_requirement_seq、effective_task_request 与最终交付对应的 requirement revision。</td></tr>
+        <tr><td>controls / control_applications</td><td>control_id、task_seq、type、payload、received_at；应用记录含 namespace、applied_seq、checkpoint_id、ack state。唯一 task_id + control_seq；不能用一个全局 destructive queue 代表所有子代理已应用。</td></tr>
+        <tr><td>events / notifications</td><td>会话内递增 event_seq、event_id、task_id、attempt_id、payload、dedup_key；终态通知以 task_id + terminal revision 去重。</td></tr>
+        <tr><td>effects / artifacts</td><td>稳定 operation_id、task_id、checkpoint_ns、tool_call_id、tool、args_digest、STARTED / SUCCEEDED / UNKNOWN、receipt/result_ref；artifact index 记录路径、版本、哈希与作用域。</td></tr>
+        <tr><td>官方 checkpoint 数据</td><td>完整图状态、pending writes、Thread / namespace、interrupt。采用官方 SQLite saver schema 与序列化，不复制到自定义任务表。</td></tr>
+      </tbody></table></div>
+      <h3>重启后的判定流程</h3>
+      <ol class="steps">
+        <li><div><strong>取得唯一运行时所有权。</strong>校验 schema 版本和持久卷；读取非终态任务，确认原进程已结束，旧执行者不得继续写 checkpoint。正常停机先停止领取，使用 RunControl drain，保存收敛结果再关闭 saver。</div></li>
+        <li><div><strong>先读执行现场。</strong>核对 latest checkpoint、pending interrupt、task revision、effect ledger 与既有预订库。根据 checkpoint 中 control cursor 修补应用确认和事件。</div></li>
+        <li><div><strong>按恢复模式继续。</strong>QUEUED 重新领取；PAUSED 保持暂停；WAITING_INPUT 保留待输入；已 drain / 安全崩溃且无未知写操作的任务从原 Thread 的 checkpoint 继续。</div></li>
+        <li><div><strong>不明写操作先阻塞。</strong>外部请求可能成功但本地未记录时标记 UNKNOWN，任务进入 RECOVERY_REQUIRED；查供应商回执或由用户对账。已经接受 CANCEL 的任务不能被自动恢复为 RUNNING。</div></li>
+        <li><div><strong>补齐持久结果。</strong>图已完成但 TaskStore 尚未更新时，用 checkpoint 与交付记录修复终态、结果通知；消息与事件都使用稳定幂等键，避免重复交付。</div></li>
+      </ol>
+      <div class="callout"><strong>TaskStore 与 Checkpointer 之间没有分布式事务。</strong>用“持久输入日志 → 图内幂等应用 → checkpoint 核实 → TaskStore 确认”的协议弥合间隙。control.applied 之前崩溃，可能重读但不能重复生效；Checkpoint 之后 ACK 丢失，恢复时补发。不承诺外部副作用 exactly-once。</div>
+      <div class="table-wrap"><table><thead><tr><th>副作用类型</th><th>取消 / 崩溃 / 重试策略</th></tr></thead><tbody>
+        <tr><td>纯计算、只读 HTTP</td><td>有界超时、可合作取消；仅已知可安全重复的错误使用有限指数退避。重试前复核 CANCEL/PAUSE/revision。</td></tr>
+        <tr><td>文件写入、编辑、删除、ICS</td><td>持久 operation_id；写入前记录预期版本，原子替换与哈希核对，文件锁覆盖实际写入区间。编辑/删除不按“同参数即可幂等”处理；随机 ICS ID 改为由操作 ID 确定，并能核对崩溃后文件。同步线程未退出前不宣称已取消。</td></tr>
+        <tr><td>预订与外部创建</td><td>继续使用现有 TravelStore 的报价归属、精确确认、CAS claim 与 UNKNOWN 状态；若供应商支持幂等键则衔接。取消执行不会取消订单；响应不明不自动重试。</td></tr>
+        <tr><td>取消与工具启动竞争</td><td>工具开始登记与控制接收按任务 revision 仲裁。已被认定 STARTED 的操作可能继续完成；CANCEL 提交后未开始的操作被拒绝。后续事件明确回报“已完成/未执行/结果未知”。</td></tr>
+      </tbody></table></div>
+      <h3>超时、限额和故障不扩大权限</h3>
+      <p>保留模型请求 timeout、工具 timeout、graph recursion 与调用次数上限；增加任务累计 active-time / model / tool 预算，跨 pause/resume/attempt 持久累计，暂停与排队不消耗 active-time。恢复不能重置所有预算从而无限执行；超限进入 RECOVERY_REQUIRED 或 FAILED，并给出可恢复条件。可恢复超时必须确认没有活跃写操作和未知副作用，才允许继续。</p>
+      <p>服务停机若超过 graceful drain 时限，按崩溃路径恢复；<code>GraphDrained</code> 属于控制收敛，不应被现有 <code>except Exception</code> 映射成 MODEL_ERROR。图/依赖/提示词版本变化记录 execution fingerprint，遇到不兼容 checkpoint 进入人工迁移流程，不盲目续跑。</p>
+      <details><summary>必须注入故障的持久化间隙</summary><div class="table-wrap"><table><thead><tr><th>崩溃点</th><th>恢复预期</th></tr></thead><tbody><tr><td>任务已落盘、尚未唤醒</td><td>启动扫描重新领取，任务不丢失。</td></tr><tr><td>控制已收到、尚未进入图</td><td>按 seq 继续读取，不能丢指令。</td></tr><tr><td>控制已 checkpoint、ACK 未写</td><td>按 cursor 补 ACK，不重复注入。</td></tr><tr><td>工具返回、图尚未 checkpoint</td><td>查询 ledger / artifact / supplier receipt，不能盲重放。</td></tr><tr><td>图完成、终态/通知未提交</td><td>修补结果与终态，仅一次通知。</td></tr><tr><td>租约过期但旧进程仍存在</td><td>单实例锁拒绝接管；未确认旧执行者结束前不启动第二个图写入者。</td></tr></tbody></table></div></details>
+    </section>
+
+    <section class="section" id="events">
+      <div class="section-label"><span>08 / LIVE EVENTS</span></div><h2>推送真实进度，订阅可以随时重建</h2>
+      <p>继续复用现有 plan、tool、trace 和 usage 转换及脱敏能力；新增统一信封。内部 checkpoints / tasks / custom 流仅供 Worker 使用，不能原样向前端暴露图状态、工具敏感参数或完整历史。</p>
+      <pre><code>{
+  "event_id": "conversation-C:1042",
+  "conversation_id": "C", "task_id": "A", "attempt_id": "attempt-2",
+  "type": "control.applied", "occurred_at": "2026-11-02T04:00:00Z",
+  "task_revision": 9, "sequence": 1042,
+  "payload": {"control_id": "ctl-3", "directive_revision": 3,
+              "scope": "root", "checkpoint_id": "..."}
+}</code></pre>
+      <div class="table-wrap"><table><thead><tr><th>事件组</th><th>内容</th><th>前端行为</th></tr></thead><tbody>
+        <tr><td>task.created / state_changed</td><td>状态、原因、revision、waiting_on</td><td>独立任务卡片更新；状态不覆盖普通聊天发送按钮。</td></tr>
+        <tr><td>task.progress / plan.updated</td><td>真实 todos、当前步骤、last_progress_at</td><td>展示实际完成项。总步骤可能变化时展示“已完成 2 项”，不虚构精确百分比。</td></tr>
+        <tr><td>tool.started / finished / failed</td><td>call ID、工具名、namespace、脱敏摘要</td><td>区分主/子代理，并显示“正在等待当前工具”，不把未返回算作失败。</td></tr>
+        <tr><td>control.received / applied / settled / rejected</td><td>control ID、seq、作用域、checkpoint、拒绝原因；修正时附合并后的要求摘要及 requirement revision</td><td>分别显示“已收到，拟将范围改为国内”“国内范围已应用”“已暂停/已取消”；允许用户核对合并目标，不能只回复“好的”。终态拒绝不能伪装成接收成功。</td></tr>
+        <tr><td>task.result / failed / recovery_required</td><td>最终结果引用、error code、可恢复条件、effect uncertainty</td><td>只追加一次完成通知；结果卡片与会话普通回复分开归属。</td></tr>
+        <tr><td>chat.delta / chat.done / usage / trace</td><td>原有回复与观测数据，加 chat_message_id / task_id</td><td>聊天消息和任务事件交错到达时，按各自 ID 更新，不写入同一 assistant 气泡。</td></tr>
+      </tbody></table></div>
+      <ul>
+        <li>事件先提交持久日志，再通知订阅。SSE 按至少一次投递设计，客户端以 event_id 去重、revision 防旧事件覆盖；断线后游标续传。</li>
+        <li>每个订阅者有界缓冲；慢客户端重连，不对 Worker 形成无限背压。高频 delta 可合并，终态与控制 ACK 不丢弃；落库失败属于任务运行时错误。</li>
+        <li>事件保留与 Checkpoint 清理策略一起设置；游标已过期返回 snapshot_required，先取状态快照再从新游标订阅。初始快照需带一致的 high-watermark，避免读取与订阅间丢事件。</li>
+        <li>客户端取消 fetch / 关闭页面 / 新建会话只停止相应前台订阅。显式取消任务通过控制接口，按钮展示具体任务名称。服务重启后先加载服务端任务快照，再接事件。</li>
+      </ul>
+      <div class="callout green"><strong>旧浏览器历史可保留，新任务状态以服务端为准。</strong>不自动把全部 localStorage 对话当作恢复依据。新 API 按 message ID 增量写入；旧接口仍接收旧格式历史。迁移可显式导入旧会话，避免重复创建任务。</div>
+    </section>
+
+    <section class="section" id="modules">
+      <div class="section-label"><span>09 / MODULE DESIGN</span></div><h2>围绕现有代码增加清晰的责任边界</h2>
+      <p class="section-intro">以下是拟新增/调整位置，不表示已经实施。模块保持小而明确；实现中允许按现有风格合并紧密相关文件。</p>
+      <div class="table-wrap"><table><thead><tr><th>建议位置</th><th>责任</th><th>复用 / 改造点</th></tr></thead><tbody>
+        <tr><td><code>schemas/interaction.py</code><br><code>schemas/task.py</code></td><td>MessageIntent、TaskStatus、ControlRequest、EventEnvelope；严格输入校验与幂等标识。</td><td>复用现有 Pydantic 风格与 public_error；旧 ChatRequest 不强制改变。</td></tr>
+        <tr><td><code>services/conversation.py</code></td><td>Conversation Controller、上下文意图/目标解析、同任务要求合并、Chat Responder 调用、任务通知合并。</td><td>复用 model/settings、既有消息限制；普通聊天与任务执行预算分离。要求合并仅归一化用户意图，后续执行规划仍由 Deep Agents 完成。</td></tr>
+        <tr><td><code>services/task_manager.py</code></td><td>生命周期、合法控制、有限队列/执行槽、领取/释放、恢复调度。</td><td>只调度现有 Agent，不实现第二套规划/工具循环。</td></tr>
+        <tr><td><code>services/agent_worker.py</code></td><td>唯一驱动 astream；配置 thread / attempt、Checkpoint、控制与结果结算。</td><td>把现有 ChatService 的事件转换与 Agent 驱动适度分离；保留旧流适配器。</td></tr>
+        <tr><td><code>storage/task_store.py</code><br><code>storage/checkpoints.py</code></td><td>SQLite schema/migrations、短事务、幂等与事件日志；官方 saver 生命周期。</td><td>独立于旅行 bookings.sqlite3，衔接其现有交易语义。</td></tr>
+        <tr><td><code>agents/control.py</code><br><code>agents/effects.py</code></td><td>模型边界控制、主图暂停、工具 gate、有效任务视图、副作用台账。</td><td>与 ContextWindowMiddleware、规划/交付校验按顺序组合，不吞 GraphBubbleUp 等图控制信号。</td></tr>
+        <tr><td><code>agents/assistant.py</code><br><code>agents/context.py</code></td><td>可选 checkpointer/runtime scope 参数、按作用域 AgentFactory、指令视图整合。</td><td>保留 build_agent 的旧默认路径、原 tools/subagents、压缩和 token preflight。</td></tr>
+        <tr><td><code>api/interactions.py</code><br><code>api/tasks.py / events.py</code></td><td>提交、状态、控制、SSE；lifespan 启停与运行时所有权。</td><td>同步更新 app.py 与 deployment/web.py 的显式路由，避免 Agent Server 路由被覆盖。</td></tr>
+        <tr><td><code>static/js/tasks.js</code><br><code>static/js/events.js</code></td><td>任务卡片、control ACK、重连 reducer、Map&lt;task_id, state&gt;。</td><td>调整 app.js / api.js / timeline.js，拆开全局 job；复用 Markdown、计划和时间线组件。</td></tr>
+      </tbody></table></div>
+      <h3>兼容策略</h3>
+      <div class="checklist"><div class="check">旧 /api/chat 的请求与 NDJSON 契约保留。</div><div class="check">新任务默认独立工作区；旧文件与日历 URL 仍可访问。</div><div class="check">新增运行时由 feature flag 控制；旧请求行为回归。</div><div class="check">保留原 Harness 能力与预算，新增控制不绕过工具权限。</div></div>
+      <p class="small">Feature flag 关闭前先排空或安全挂起持久任务；不能让关闭功能导致任务记录消失。现有 managed graph 默认不强行注入本机 SQLite Checkpointer，避免与 Agent Server 托管持久化冲突；新增调度器仅在 standalone 运行模式启用。</p>
+    </section>
+
+    <section class="section" id="delivery">
+      <div class="section-label"><span>10 / DELIVERY &amp; ACCEPTANCE</span></div><h2>先验证扩展点，再交付完整 MVP</h2>
+      <p class="section-intro">当前仅完成静态分析与方案编制。以下探针、测试和实现均待方案确认后执行；不把设计演示当成系统已通过验收。</p>
+      <div class="phase"><div class="phase-id">P0<span>分项验证</span></div><div><h3>先验证持续对话与要求合并所依赖的扩展点</h3><p>P1a 验证现有请求级隔离、慢工具期间独立聊天、消息快照与 FIFO；同步验证上下文路由、条件替换/保留、同一次执行的边界 Steering、主/子代理配置与 namespace 传播、未启动工具 gate 及交付 revision 屏障。使用真实 Deep Agents Graph + 假模型 + 可控工具，确认原任务不因修正被取消，最终采用最新要求。</p><p>首期同时验证所需的最小 TaskStore / 控制日志、官方 SQLite saver 与 checkpoint 4.3.1 兼容性，确保按既定协议在 checkpoint 后确认应用。进入 P1b 前再补暂停重放、并发调度、RunControl 停机收敛、完整故障恢复与副作用矩阵。</p><p><strong>对应退出条件：</strong>P1a 满足 UC01–UC03、UC05–UC06，修正幂等、同 Thread 无双写、最终交付版本正确；P1b 进一步满足主图暂停后无残留工具及进程级故障恢复。嵌套暂停未过关则保留主图暂停边界，不宣称子代理内部暂停可用。</p></div></div>
+      <div class="phase"><div class="phase-id">P1a<span>第一优先</span></div><div><h3>持续追加对话 + 同任务要求合并，一起交付</h3><p>按依赖实施最小控制链路：① 会话/任务关联与有界消息接收；② 最小 TaskStore、持久控制日志、官方 saver、独立 Worker；③ 要求合并与边界 Steering Middleware；④ 独立普通聊天及 FIFO；⑤ 每条消息/任务的进度、合并要求摘要及应用确认。首期可限制每个会话一个执行任务加一条普通聊天通道，但不能省略运行中修正。</p><p><strong>验收：</strong>通过 UC01–UC03、UC05–UC06。既能在慢任务未结束时连续聊天，也能把“全球新闻 → 国内 → 最近三天 → 科技”合并为当前任务要求；中间插入聊天不丢条件。覆盖搜索尚未开始、工具运行中、交付前修正、终态后转修订任务、指代不明、重复控制与连续修正。旧执行不被取消重启；只解锁输入框不算完成。</p><p>普通聊天采用受限独立通道；任务修正使用控制通道，不等待聊天模型完成。完整 STATUS、用户暂停/恢复、持久任务取消、多任务执行并发与进程级自动恢复在 P1b 交付。第一项交付仍需最小持久状态保障 Steering 确认，不能用内存队列冒充本文协议。当前只更新方案，待确认后编写实现。</p></div></div>
+      <div class="phase"><div class="phase-id">P1b<span>完整 MVP</span></div><div><h3>扩展任务控制、并发与完整故障恢复</h3><p>在持续聊天和同任务修正可用的基础上，扩展任务状态机、状态查询、暂停/恢复/取消、多任务限流、副作用台账与累计预算、断线重连、服务重启恢复及部署适配，并完成全部自动化故障与回归验收。</p><p>新增覆盖 UC04、UC07–UC10，连同 P1a 共同满足原始全部七项用户验收。单机、小并发和主图暂停边界是完整 MVP 的限制；P1a 是优先交付的子集，不将它冒充全部全双工能力。</p></div></div>
+      <div class="phase"><div class="phase-id">P2<span>按证据扩展</span></div><div><h3>先改善实测弱点，再扩大部署范围</h3><p>根据 P1 数据决定是否细化子代理内部暂停、共享成果版本合并、独立 Worker 进程或 Agent Server / PostgreSQL 适配。只有多实例/负载需求已经出现，且幂等/恢复测试仍通过，才扩大部署；不更换现有 Harness。</p></div></div>
+      <h3>验收矩阵</h3>
+      <div class="table-wrap"><table><thead><tr><th>编号 / 用户目标</th><th>自动化场景</th><th>通过判据</th></tr></thead><tbody>
+        <tr><td>A1 · 长任务期间持续聊天</td><td>用 Event barrier 挂住任务 A 的慢工具，连续发送三条有关联的 CHAT，包含前一条仍在回复时的追问；P1b 再加 STATUS 与两个后台任务。</td><td>聊天在工具 barrier 释放前按自身顺序回复，后续可引用已完成聊天，message_id / in_reply_to 不串用；A 不被取消或重启。STATUS 直接返回状态；不能只通过快速假任务掩盖阻塞。</td></tr>
+        <tr><td>A2 · 非阻塞查询</td><td>后台配额耗尽、模型限流/断连、工具未返回时查询。</td><td>STATUS 不调用执行模型、不等待任务槽；返回 state / current step / last_progress_at / control ACK。</td></tr>
+        <tr><td>A3 · 同任务合并与 Steering<br><span class="tag green">P1a 必须通过</span></td><td>以“搜索全球新闻 → 国内 → 最近三天 → 科技”为主用例，分别在查询前、模型/工具/子代理运行中、交付前发送修正；穿插独立聊天，重发 control_id，并测试“最近一周”替换时间及终态竞争。</td><td>最终有效目标及结果为最新要求，未修正条件保留；独立聊天不改任务；Thread 不变、原执行未被 cancel；陈旧未启动工具被拦截，运行中工具按语义结算；每分支幂等，checkpoint 后才 ACK；交付不得使用过期 revision。</td></tr>
+        <tr><td>A4 · 暂停、恢复、取消</td><td>QUEUED/RUNNING/PAUSING/PAUSED 下控制；慢只读、同步写工具、task 子代理与同批多工具；CANCEL/RESUME 竞争。</td><td>先 RECEIVED 再 SETTLED；PAUSED 前工具已收敛且有 checkpoint；恢复释放/重领槽并沿同 Thread 继续；CANCELLED 不可直接恢复。</td></tr>
+        <tr><td>A5 · 并发与隔离</td><td>N=2，提交三个任务；相同会话不同任务同时写同名相对路径；同 task 多个 resume；旧根目录访问与任务目录写竞争。</td><td>最多两个后台任务执行，第三个排队；每 Thread 一写入者；任务文件隔离，共享资源按规则互斥；todos、上下文、回调、成本不串任务。</td></tr>
+        <tr><td>A6 · 重启恢复</td><td>真实子进程 + 临时磁盘数据库；在各持久化间隙强制终止进程，再创建新进程恢复。覆盖运行/暂停/取消中/已完成待通知。</td><td>无任务或控制丢失；暂停保持暂停；安全任务从 checkpoint 续跑；未知写操作不重试；完成通知幂等。</td></tr>
+        <tr><td>A7 · 异常可靠性</td><td>模型/工具 timeout、429、DB busy/磁盘满、外部成功但回包丢失、Checkpoint 写失败、Worker 崩溃、重复请求和终态竞争。</td><td>有明确可恢复分类；不无限重试、不重复下单/写入；预算跨恢复累计；未落盘控制不确认；错误不泄露敏感信息。</td></tr>
+        <tr><td>A8 · 订阅与旧功能</td><td>客户端慢读、断连重连、事件重复/乱序/过期、刷新/新会话；原 chat、日历下载、部署路由、计划/压缩/工具回归。</td><td>任务持续运行；事件去重且终态最终可见；快照与游标无间隙；旧接口及 Agent 能力保持预期。</td></tr>
+      </tbody></table></div>
+      <h3>测试分层与执行门禁</h3>
+      <ul>
+        <li><strong>单元：</strong>路由目标解析、状态合法性、幂等键、控制顺序、revision CAS、事件 reducer、budget。针对竞争和边界验证行为，不只镜像实现。</li>
+        <li><strong>Graph 集成：</strong>沿用现有真实 Deep Agents + mocked model 方法；可控工具用 barrier 驱动，不靠固定 sleep 猜时序。覆盖子代理、并行 ToolMessage 配对、压缩和工具授权。</li>
+        <li><strong>进程级恢复：</strong>SQLite 磁盘持久化 + 强制进程终止；使用合成 supplier ledger 计数，核验副作用次数，不能只换一个内存对象冒充重启测试。</li>
+        <li><strong>浏览器：</strong>验证长任务运行时输入可用、多卡片目标选择、ACK 文案、刷新恢复与键盘操作；原 Node NDJSON 测试保留。</li>
+        <li><strong>仓库门禁：</strong>变更 Agent 行为或聊天状态后，依照 <a href="../../AGENTS.md">AGENTS.md</a> 执行 <code>make agent-check</code>（pytest + Node + Ruff + offline/live golden）。真实模型缺密钥、超时或不完整必须报告未通过；不降阈值、不覆盖 baseline、不掩盖关键失败。</li>
+      </ul>
+      <div class="callout green"><strong>建议性能门槛，实施压测后确认。</strong>本机合成负载下，接收控制与 STATUS 的 p95 可先以 300ms、提交 NEW_TASK 以 500ms 为目标，均不含模型推理。Steering/暂停用“到达约定安全边界后的下一决策”验收，而非给任意长 Tool 编造固定响应时限。普通聊天的核心判据是无需等待后台 barrier；模型供应商拥塞另行记录。</div>
+    </section>
+
+    <section class="section" id="decisions">
+      <div class="section-label"><span>11 / REVIEW DECISIONS</span></div><h2>确认方案时，重点审阅四个取舍</h2>
+      <p><strong>已确定的优先级：</strong>持续追加对话与同任务要求合并一起作为 P1a，不再把“全球新闻改国内”留待后续。以下部署与完整控制取舍不削减这一首期要求。</p>
+      <div class="two"><div class="panel"><div class="index">D1 / DEPLOYMENT</div><h3>单机单进程，小并发起步</h3><p>推荐 FastAPI 内嵌 Worker + SQLite；默认两个后台任务、独立交互通道。明确排除多个进程抢写同一执行 Thread。</p></div><div class="panel"><div class="index">D2 / PAUSE BOUNDARY</div><h3>工具先结束，主图再暂停</h3><p>当前同步子代理也算一个运行中工具，可能等待较久。首期界面持续显示 PAUSING；不承诺子代理内部立即持久挂起。</p></div><div class="panel"><div class="index">D3 / FILE ISOLATION</div><h3>新任务目录隔离</h3><p>任务默认拥有独立文件空间，成果通过引用共享。旧聊天文件保留；明确共享资源写入的锁与版本规则。</p></div><div class="panel"><div class="index">D4 / TERMINAL SEMANTICS</div><h3>取消终止，未知副作用待核对</h3><p>PAUSED 可恢复；CANCELLED 需新建后续任务。服务重启自动续跑安全任务，写操作结果不明则 RECOVERY_REQUIRED。</p></div></div>
+      <p>以上均为建议默认值。方案确认后先执行 P0 探针，若结果改变核心设计，更新本文并说明差异，再推进依赖该结论的实现。当前文档不宣称任何全双工运行时能力已经落地。</p>
+    </section>
+
+    <section class="section" id="references">
+      <div class="section-label"><span>12 / EVIDENCE &amp; REFERENCES</span></div><h2>以锁定源码为准，官方资料补充语义</h2>
+      <p class="section-intro">查证日期 2026-11-02。网页可能已展示更新版本，API 可用性以本地锁定版本核验为准。时间窗用于核对近期可复用资产；框架基础语义作为持续维护的基石引用，不把首次提出时间冒充近期创新。本方案不引入模型权重或数据集，不复制其他产品实现。</p>
+      <details open><summary>本地第三方源码核验位置</summary><ul class="evidence-list">
+        <li><code>.venv/lib/python3.13/site-packages/deepagents/graph.py:289</code>：create_deep_agent 参数已支持 middleware / checkpointer / context_schema；<code>:853, :865</code>：profile 安装与 GP Middleware 继承规则。</li>
+        <li><code>deepagents/middleware/subagents.py:856, :886</code>：父 callbacks/configurable 传播；<code>async_subagents.py:56, :120</code>：AsyncSubAgent 需要 Agent Protocol，更新策略为 interrupt/enqueue。</li>
+        <li><code>langchain/agents/middleware/types.py:455, :490, :756</code>：模型边界与工具 wrapper；<code>langgraph/prebuilt/tool_node.py:862, :1241</code>：并行 gather 与控制异常传播。</li>
+        <li><code>langgraph/types.py:903</code>：interrupt 需要 checkpoint，恢复重跑节点；<code>langgraph/pregel/main.py:3154, :3204</code>：astream、多模式、subgraphs 与 durability。</li>
+        <li><code>langgraph/runtime.py:79</code>、<code>pregel/_loop.py:683</code>、<code>errors.py:55</code>：RunControl、边界 drain 与 GraphDrained；<code>deepagents/middleware/patch_tool_calls.py:17</code>：悬空工具消息修补。</li>
+      </ul><p>以上第三方路径除第一条外省略相同 site-packages 前缀；.venv 不属于版本化源码。Deep Agents、LangChain 与 LangGraph 使用其官方仓库许可；实施新增依赖时复核对应发行版的 LICENSE/依赖许可并锁定版本。</p></details>
+      <ol class="evidence-list">
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/customization">Deep Agents · Customization</a> — Harness 的模型、工具、Middleware、后端和持久化扩展点。</li>
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/subagents">Deep Agents · Subagents</a> / <a href="https://docs.langchain.com/oss/python/deepagents/profiles">Profiles</a> — 默认同步子代理、上下文隔离与 profile。</li>
+        <li><a href="https://docs.langchain.com/oss/python/deepagents/async-subagents">Deep Agents · Async subagents</a> — Agent Protocol、后台任务工具、更新会启动新 run，不能直接替代同次执行 Steering。</li>
+        <li><a href="https://docs.langchain.com/oss/python/langchain/middleware/custom">LangChain · Custom middleware</a> — 模型/工具 hook 的原生接入方式。</li>
+        <li><a href="https://docs.langchain.com/oss/python/langgraph/interrupts">LangGraph · Interrupts</a> — durable pause、resume ID、节点重放与副作用幂等约束。</li>
+        <li><a href="https://docs.langchain.com/oss/python/langgraph/persistence">LangGraph · Persistence</a> / <a href="https://docs.langchain.com/oss/python/langgraph/add-memory">Memory</a> — Checkpointer、Thread 状态与存储选择。</li>
+        <li><a href="https://docs.langchain.com/oss/python/langgraph/streaming">LangGraph · Streaming</a> — messages / updates / custom / checkpoints / tasks 模式与 namespace。</li>
+        <li><a href="https://reference.langchain.com/python/langgraph/runtime/RunControl">LangGraph · RunControl</a> / <a href="https://reference.langchain.com/python/langgraph/errors/GraphDrained">GraphDrained</a> — 协作式 superstep 边界收敛。</li>
+        <li><a href="https://docs.langchain.com/langsmith/double-texting">LangSmith · Double texting</a> — Agent Server 的 enqueue / interrupt / rollback，区别于 OSS 中的节点 interrupt。</li>
+        <li><a href="https://reference.langchain.com/python/langgraph.checkpoint.sqlite/aio/AsyncSqliteSaver">Official AsyncSqliteSaver</a> — 官方轻量 SQLite 持久化适配器；实际兼容版本待 P0 验证。</li>
+        <li><a href="https://docs.openclaw.ai/concepts/queue">OpenClaw · Command queue</a> — steer 与 interrupt 的产品语义区别、正在运行的工具及下一决策边界。仅作为交互参考。</li>
+        <li><a href="../../pyproject.toml">pyproject.toml</a> / <a href="../../uv.lock">uv.lock</a> / <a href="../../Makefile">Makefile</a> / <a href="../../AGENTS.md">AGENTS.md</a> — 本项目依赖与正式回归门禁。</li>
+      </ol>
+    </section>
+    <footer><div class="footer-line"><span>PERSONAL ASSISTANT · DESIGN NOTE 001</span><span>2026-11-02 · 方案待确认 · 实现尚未开始</span></div><p>文档中的架构、接口、数据结构与验收指标均为拟议设计。已核验事实限于明确标注的本地源码、锁定依赖与官方资料；交互演示仅用于解释协议。</p></footer>
+  </main>
+</div>
+<script>
+  'use strict';
+  document.getElementById('print-document').addEventListener('click', () => window.print());
+  const navigation = [...document.querySelectorAll('.sidebar nav a')];
+  if ('IntersectionObserver' in window) {
+    const observer = new IntersectionObserver(entries => {
+      for (const entry of entries) if (entry.isIntersecting) {
+        navigation.forEach(link => {
+          const active = link.hash === '#' + entry.target.id;
+          link.classList.toggle('active', active);
+          if (active) link.setAttribute('aria-current', 'location');
+          else link.removeAttribute('aria-current');
+        });
+      }
+    }, {rootMargin:'-5% 0px -78% 0px',threshold:0});
+    document.querySelectorAll('main section[id]').forEach(section => observer.observe(section));
+  }
+  const sim = {status:'RUNNING',pending:[],revision:0,sequence:1};
+  const log = document.getElementById('sim-log');
+  const simButton = action => document.querySelector('[data-sim="' + action + '"]');
+  function record(text) {
+    sim.sequence++;
+    const item = document.createElement('li');
+    const number = document.createElement('em');
+    number.textContent = String(sim.sequence).padStart(2,'0') + ' ';
+    item.append(number,document.createTextNode(text));
+    log.append(item);
+    log.scrollTop = log.scrollHeight;
+  }
+  function renderSimulation() {
+    const labels = {RUNNING:'RUNNING · 工具执行中',PAUSING:'PAUSING · 等待当前工具结束',PAUSED:'PAUSED · checkpoint 已持久保存',CANCELLING:'CANCELLING · 等待工具结算',CANCELLED:'CANCELLED · 执行已停止'};
+    document.getElementById('sim-status').textContent = labels[sim.status];
+    document.getElementById('sim-revision').textContent = 'rev ' + sim.revision + (sim.revision ? ' · 新预算约束已生效' : ' · 原始任务约束');
+    const terminal = sim.status === 'CANCELLED';
+    simButton('steer').disabled = terminal || sim.status === 'CANCELLING' || sim.pending.includes('STEER');
+    simButton('pause').disabled = sim.status !== 'RUNNING';
+    simButton('cancel').disabled = terminal || sim.status === 'CANCELLING';
+    simButton('boundary').disabled = terminal || sim.status === 'PAUSED';
+    simButton('resume').disabled = sim.status !== 'PAUSED';
+  }
+  function acknowledge(text) {document.getElementById('sim-control').textContent = text;}
+  document.querySelectorAll('[data-sim]').forEach(button => button.addEventListener('click', () => {
+    const action = button.dataset.sim;
+    if (action === 'chat') record('chat.done · 普通聊天已独立回复');
+    if (action === 'steer') {sim.pending.push('STEER');acknowledge('RECEIVED · 预算约束等待安全边界');record('control.received · STEER，不取消当前执行');}
+    if (action === 'pause') {sim.pending.push('PAUSE');sim.status='PAUSING';acknowledge('RECEIVED · 暂停尚未生效');record('control.received · PAUSE，工具仍在运行');}
+    if (action === 'cancel') {
+      sim.pending=['CANCEL'];
+      if (sim.status === 'PAUSED') {sim.status='CANCELLED';acknowledge('SETTLED · 已关闭恢复权');record('task.cancelled · 挂起任务无活跃工具，直接结束');}
+      else {sim.status='CANCELLING';acknowledge('RECEIVED · 等待正在运行的工具结算');record('control.received · CANCEL，不撤回已发生的副作用');}
+    }
+    if (action === 'boundary') {
+      record('tool.finished · 到达主图安全边界');
+      if (sim.pending.includes('CANCEL')) {sim.status='CANCELLED';acknowledge('SETTLED · 工具已结算，执行已停止');record('task.cancelled · 副作用已保留，终态不可直接恢复');}
+      else {
+        if (sim.pending.includes('STEER')) {sim.revision++;acknowledge('APPLIED · 约束已 checkpoint');record('control.applied · 新约束进入下一决策上下文');}
+        if (sim.pending.includes('PAUSE')) {sim.status='PAUSED';acknowledge('SETTLED · 暂停 checkpoint 已确认');record('task.paused · 释放后台执行槽');}
+        else {record('model.next · 沿同一任务继续决策');record('tool.started · 下一工具（演示）');}
+      }
+      sim.pending=[];
+    }
+    if (action === 'resume') {
+      sim.status='RUNNING';record('task.resumed · 同一 Thread，Command(resume)');
+      if (sim.pending.includes('STEER')) {sim.revision++;record('control.applied · 挂起期间的新约束已 checkpoint');}
+      sim.pending=[];acknowledge('SETTLED · 已恢复，演示假设执行槽可用');record('tool.started · 继续执行');
+    }
+    if (action === 'reset') {sim.status='RUNNING';sim.pending=[];sim.revision=0;sim.sequence=1;log.replaceChildren();const item=document.createElement('li');const number=document.createElement('em');number.textContent='01 ';item.append(number,document.createTextNode('tool.started · A'));log.append(item);acknowledge('暂无控制指令');}
+    renderSimulation();
+  }));
+  renderSimulation();
+</script>
+</body>
+</html>

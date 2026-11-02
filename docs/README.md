@@ -6,6 +6,12 @@
 | [langsmith-capabilities.md](langsmith-capabilities.md) | LangSmith 能力说明 |
 | [个人助理原型.html](个人助理原型.html) | 个人助理界面原型 |
 
+## Design
+
+| 文档 | 说明 | 状态 |
+| --- | --- | --- |
+| [design/full-duplex-agent-interaction.html](design/full-duplex-agent-interaction.html) | **技术设计**：全双工 Agent 交互，持续追加对话与同任务要求合并列为第一优先级；含“全球新闻改国内”及连续修正用例、10 个用户用例、架构、状态隔离、持久恢复与验收方案 | 待确认（2026-11-02；尚未修改实现代码） |
+
 ## Research
 
 | 文档 | 说明 | 状态 |
