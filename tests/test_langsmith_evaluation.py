@@ -24,7 +24,7 @@ def native_result():
         "workspace": ".",
         "turns": [
             {
-                "answer": "Hello, world!",
+                "answer": "**Hello**, world!",
                 "todos": [],
                 "tools": [],
                 "done": True,
@@ -81,6 +81,16 @@ def test_official_openevals_parsing_with_fake_model(monkeypatch, response, passe
             )[1]
         )
         assert actual_input["initial_todos"] == [{"content": "原有待办", "status": "pending"}]
+        reference = json.loads(
+            re.search(
+                r"<reference_outputs>\s*(.*?)\s*</reference_outputs>",
+                payload["messages"][-1]["content"],
+                re.S,
+            )[1]
+        )
+        assert reference["length_measurements"] == [
+            {"turn": 1, "count": 12, "limit": 25, "mode": "visible"}
+        ]
         response_format = payload["response_format"]
         assert response_format["type"] == "json_schema"
         assert response_format["json_schema"]["strict"] is True

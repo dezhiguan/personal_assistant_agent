@@ -38,6 +38,7 @@ make golden-offline # 17条边界场景各运行两次，无网络
 `scripts/run_golden.py` 与兼容入口 `scripts/evaluate_agent.py` 调用同一实现。
 LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录；官方 OpenEvals Correctness
 负责开放题评分，Agent和裁判均使用 `qwen3.8-flash`，不需要 Qwen-Plus 权限。
+字符数和JSON格式由程序独立强制核验，语义裁判只评事实正确性和内容完整性，不估算字符数。
 项目仍保留工具授权、真实文件、待办、交付格式等业务断言，以及独立的真实 Graph 并发与进程恢复测试。
 接入 LangSmith 不会自动生成这些业务正确性标准。
 
@@ -53,7 +54,7 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 缺少配置明确失败；报告在失败时仍上传。`--judge` 为兼容选项，正式实验始终启用质量评分。
 
 2026-11-03 本地完整检查通过：449项Python、17项Node、Ruff，真实场景122/122，关键失败0。
-[本轮实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=173b3a07-4b76-4edf-9b73-613c344c5833) 为 `personal-assistant-golden-5cbfc3b8`；
+[本轮实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=cfe955ea-7739-4be2-8db6-28da8c75cc87) 为 `personal-assistant-golden-b9ab132f`；
 源码指纹核验、完整日志与先前两次中止记录位于 `artifacts/ci/native-evaluation/`。
 云托管与GitHub Actions结果应分别核验，不能由本地评估代替。
 
