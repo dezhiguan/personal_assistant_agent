@@ -480,3 +480,25 @@ def test_serial_json_does_not_replace_an_extended_requested_schema(tmp_path, mon
         "最终只输出JSON：total_hours、shortfall_hours、feasible、resources。",
     )
     assert result["messages"][-1].content == content
+
+
+def test_missing_calendar_capability_is_explicit_without_model_guess(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    graph = build_agent(Settings(api_key="synthetic"), tools=[])
+
+    async def should_not_call(*args, **kwargs):
+        raise AssertionError("Missing capability can be answered without model execution")
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", should_not_call)
+    result = asyncio.run(
+        graph.ainvoke({"messages": [{"role": "user", "content": "立即创建日历会议"}]})
+    )
+    assert "未提供日历创建工具" in result["messages"][-1].content
+    assert "无法" in result["messages"][-1].content
+
+
+@pytest.mark.parametrize("query", ["起草创建日历会议的文案", "创建日历会议，请先询问缺少的时间"])
+def test_calendar_draft_and_available_tool_still_reach_model(tmp_path, monkeypatch, query):
+    monkeypatch.chdir(tmp_path)
+    result = invoke([AIMessage(content="请提供会议主题和时间。")], query)
+    assert result["messages"][-1].content == "请提供会议主题和时间。"

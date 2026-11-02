@@ -1,12 +1,19 @@
 """Current-turn scope and read deduplication regressions."""
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+import asyncio
 
+import pytest
+from langchain_core.callbacks import BaseCallbackHandler
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatResult
+
+from personal_assistant_agent.agents.assistant import build_agent
 from personal_assistant_agent.agents.tool_policy import (
     cached_read,
     selected_tools,
     standalone_question,
 )
+from personal_assistant_agent.core.config import Settings
 
 
 def tool(name):
@@ -49,3 +56,99 @@ def test_cached_read_stays_in_current_turn_and_is_invalidated_by_mutation():
     assert cached_read([*messages, HumanMessage(content="再次读取")], call) is None
     assert cached_read([*messages, *read_pair("edit_file", "edit")], call) is None
     assert selected_tools([*messages, *read_pair(call_id="r2")], [tool("read_file")]) == []
+
+
+@pytest.mark.parametrize(
+    "name,args",
+    [
+        ("write_file", {"file_path": "/new.txt", "content": "unauthorized"}),
+        ("edit_file", {"file_path": "/important.txt", "old_string": "原稿", "new_string": "修改"}),
+        ("delete", {"file_path": "/important.txt"}),
+        ("execute", {"command": "touch /new.txt"}),
+        ("task", {"subagent_type": "general-purpose", "description": "删除important.txt"}),
+    ],
+)
+def test_default_window_blocks_unconfirmed_effects_even_if_model_invents_call(
+    tmp_path, monkeypatch, name, args
+):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "workspace").mkdir()
+    original = tmp_path / "workspace/important.txt"
+    original.write_text("原稿")
+    actual = []
+
+    class Tools(BaseCallbackHandler):
+        def on_tool_start(self, serialized, input_str, **kwargs):
+            actual.append(serialized["name"])
+
+    async def generate(self, messages, **kwargs):
+        offered = {t["function"]["name"] for t in kwargs.get("tools", [])}
+        assert not offered.intersection({"write_file", "edit_file", "delete", "execute", "task"})
+        reply = (
+            AIMessage(content="仅提供整理建议，等待确认。")
+            if any(isinstance(m, ToolMessage) for m in messages)
+            else AIMessage(content="", tool_calls=[{"name": name, "id": "effect", "args": args}])
+        )
+        return ChatResult(generations=[ChatGeneration(message=reply)])
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", generate)
+    graph = build_agent(Settings(api_key="synthetic", context_window_tokens=0))
+    result = asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [HumanMessage(content="先告诉我整理建议，未经我确认不要修改或删除。")],
+            },
+            config={"callbacks": [Tools()]},
+        )
+    )
+    assert original.read_text() == "原稿"
+    assert not (tmp_path / "workspace/new.txt").exists()
+    assert not actual
+    assert any(isinstance(m, ToolMessage) and m.status == "error" for m in result["messages"])
+
+
+def test_new_explicit_confirmation_restores_mutation_permission(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "workspace").mkdir()
+    original = tmp_path / "workspace/important.txt"
+    original.write_text("原稿")
+
+    async def generate(self, messages, **kwargs):
+        assert "edit_file" in {t["function"]["name"] for t in kwargs.get("tools", [])}
+        calls = (
+            []
+            if any(isinstance(m, ToolMessage) for m in messages)
+            else [
+                {
+                    "name": "edit_file",
+                    "id": "allowed",
+                    "args": {
+                        "file_path": "/important.txt",
+                        "old_string": "原稿",
+                        "new_string": "确认版",
+                    },
+                }
+            ]
+        )
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(content="完成" if not calls else "", tool_calls=calls)
+                )
+            ]
+        )
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", generate)
+    graph = build_agent(Settings(api_key="synthetic"))
+    asyncio.run(
+        graph.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(content="未经我确认不要修改或删除。"),
+                    AIMessage(content="等待确认。"),
+                    HumanMessage(content="现在确认，将important.txt中的原稿改成确认版。"),
+                ]
+            }
+        )
+    )
+    assert original.read_text() == "确认版"

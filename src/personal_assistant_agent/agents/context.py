@@ -15,6 +15,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from personal_assistant_agent.agents.token_budget import PROTOCOL_MARGIN
 from personal_assistant_agent.agents.tool_policy import (
+    authorized_tools,
     cached_read,
     selected_tools,
     standalone_question,
@@ -391,7 +392,9 @@ class ContextWindowMiddleware(SummarizationMiddleware):
 
     def wrap_model_call(self, request, handler):
         if not self.window:
-            return super().wrap_model_call(request, handler)
+            return super().wrap_model_call(
+                request.override(tools=authorized_tools(request.messages, request.tools)), handler
+            )
 
         def checked(candidate):
             messages, kwargs = self._count_args(candidate)
@@ -414,7 +417,9 @@ class ContextWindowMiddleware(SummarizationMiddleware):
 
     async def awrap_model_call(self, request, handler):
         if not self.window:
-            return await super().awrap_model_call(request, handler)
+            return await super().awrap_model_call(
+                request.override(tools=authorized_tools(request.messages, request.tools)), handler
+            )
 
         async def checked(candidate):
             messages, kwargs = self._count_args(candidate)
@@ -435,9 +440,10 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         return await super().awrap_model_call(request, checked)
 
     def _tool_override(self, request):
-        if not self.window or request.tool is None:
+        if request.tool is None:
             return None
-        allowed = {tool_name(t) for t in selected_tools(request.state["messages"], [request.tool])}
+        selector = selected_tools if self.window else authorized_tools
+        allowed = {tool_name(t) for t in selector(request.state["messages"], [request.tool])}
         call = request.tool_call
         if call["name"] not in allowed:
             return ToolMessage(
@@ -446,6 +452,8 @@ class ContextWindowMiddleware(SummarizationMiddleware):
                 name=call["name"],
                 status="error",
             )
+        if not self.window:
+            return None
         if (previous := cached_read(request.state["messages"], call)) is not None:
             return previous.model_copy(
                 update={

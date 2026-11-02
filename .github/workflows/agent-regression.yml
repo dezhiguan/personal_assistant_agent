@@ -19,8 +19,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: uv sync --group dev
-      - run: make test golden-offline
+      - run: uv sync --locked --group dev
+      - run: make test
 
   live:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push'
@@ -33,16 +33,31 @@ jobs:
       MODEL_NAME: qwen3.8-flash
       LANGSMITH_PROMPT_REF: ${{ vars.LANGSMITH_PROMPT_REF }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-      LANGSMITH_TRACING: 'false'
+      LANGSMITH_TRACING: 'true'
     steps:
       - uses: actions/checkout@v4
+      - name: Check live evaluation credentials
+        run: |
+          python3 - <<'PY'
+          import os
+          required = ['DASHSCOPE_API_KEY', 'LANGSMITH_API_KEY']
+          missing = [name for name in required if not os.environ.get(name, '').strip()]
+          if missing:
+              message = 'Live golden not run; missing Secrets: ' + ', '.join(missing)
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as out:
+                  out.write(message + '\n')
+              raise SystemExit(message)
+          PY
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.13'
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
       - run: make golden
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: golden-report
-          path: artifacts/golden/latest.json
+          path: artifacts/golden/

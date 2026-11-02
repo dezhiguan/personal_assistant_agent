@@ -23,6 +23,7 @@ dependencies = [
     "pint>=0.25,<1",
     "defusedxml>=0.7,<1",
     "langgraph-checkpoint-sqlite>=3,<4",
+    "openevals>=0.2.2,<0.3",
 ]
 
 [project.scripts]

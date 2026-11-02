@@ -1,1 +1,1 @@
-"""Synthetic evaluation data, deterministic checks and Qwen judge."""
+"""Synthetic scenarios and project assertions for native LangSmith experiments."""

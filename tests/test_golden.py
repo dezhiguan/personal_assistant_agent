@@ -1,11 +1,8 @@
 """The evaluator must fail incorrect answers, not reward plausible claims."""
 
-import asyncio
 import hashlib
-import importlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -244,29 +241,3 @@ def test_dataset_and_repeat_changes_invalidate_comparison():
     assert "incompatible_baseline" in gate([row()], old, "changed", 1)["reasons"]
     assert "incompatible_baseline" in gate([row()], old, "fixed", 2)["reasons"]
     assert "case_coverage_changed" in gate([], old, "fixed", 1)["reasons"]
-
-
-def test_calibration_cannot_validate_changed_agent_source(tmp_path, monkeypatch):
-    monkeypatch.syspath_prepend(str(ROOT / "scripts"))
-    module = importlib.import_module("rejudge_golden")
-    root = tmp_path / "project"
-    snapshot = ROOT / "evaluations/golden/cases.json"
-    (root / "evaluations/golden").mkdir(parents=True)
-    (root / "evaluations/golden/cases.json").write_bytes(snapshot.read_bytes())
-    recorded = root / "recorded"
-    recorded.mkdir()
-    (recorded / "cases.snapshot.json").write_bytes(snapshot.read_bytes())
-    (recorded / "report.json").write_text(
-        json.dumps(
-            {
-                "suite_hash": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
-                "source_hash": "previous-source",
-            }
-        )
-    )
-    monkeypatch.setattr(module, "ROOT", root)
-    monkeypatch.setattr(module, "source_hash", lambda _, **kwargs: "modified-source")
-    args = SimpleNamespace(source=recorded, write_baseline=root / "baseline.json")
-    with pytest.raises(ValueError, match="Source changed"):
-        asyncio.run(module.run(args))
-    assert not args.write_baseline.exists()

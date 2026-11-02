@@ -22,19 +22,40 @@ personal-assistant-system:5e18c4c5f0157b4e6acabe59475fc77350be93bf399483c8323a59
 
 ## 数据集与自动评测
 
-数据集源文件：`evaluations/assistant-v1.json`，共 10 个合成用例，涵盖名称、历史上下文、请求隔离、计算、翻译、摘要、JSON、能力诚实性和 Planning。不会把真实用户聊天自动加入数据集。
-
-[LangSmith 数据集](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/465f4c9b-37ab-4166-a4ed-a2db6bc39c9e)。同步使用稳定用例 ID，更新已有样例，重复运行不重复插入，不删除平台中其他样例。额外样例导致数量与本地用例不符时，评测门槛会失败，需人工整理或使用新的数据集名称。
+唯一数据源为 `evaluations/golden/cases.json`，共61个合成场景、12个维度，
+同步到 [personal-assistant-golden-v2](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087)，每条重复两次。原10条
+[历史数据集](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/465f4c9b-37ab-4166-a4ed-a2db6bc39c9e)
+及既有实验保留，源文件归档为 `evaluations/golden/history/assistant-v1.json`。
+同步使用稳定用例ID，重复运行不重复插入；发现额外云端样例会失败并要求复核，不自动删除。
+不会把真实用户聊天自动加入数据集。
 
 ```bash
-uv run python scripts/evaluate_agent.py --judge
+make agent-check    # pytest、前端、Ruff，再运行真实模型实验
+make golden         # 仅真实模型实验，122次场景检查
+make golden-offline # 17条边界场景各运行两次，无网络
 ```
 
-命令同步数据集、调用真实 Qwen、创建 LangSmith experiment、写入规则评分与 Qwen 质量评分，保存 `artifacts/evaluations/latest.json`。每个用例的规则必须通过；使用 `--judge` 时，每项模型评分默认必须 ≥ 0.8，否则命令返回非零。阈值可用 `--min-quality` 调整；去掉 `--judge` 只运行确定性规则。实验记录包含提示词提交、用例文件 SHA256 和 Git revision。工作区未提交时，Git revision 只标识最近提交，不代表包含当前改动。
+`scripts/run_golden.py` 与兼容入口 `scripts/evaluate_agent.py` 调用同一实现。
+LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录；官方 OpenEvals Correctness
+负责开放题评分，Agent和裁判均使用 `qwen3.8-flash`，不需要 Qwen-Plus 权限。
+项目仍保留工具授权、真实文件、待办、交付格式等业务断言，以及独立的真实 Graph 并发与进程恢复测试。
+接入 LangSmith 不会自动生成这些业务正确性标准。
 
-模型评分需要额外 Qwen 调用。同一系列 Qwen 充当裁判，结果是小规模回归信号，不能替代人工质量审核。
+每次检查必须通过项目断言，需语义评分时分数至少0.8；全部122次通过才允许发布。
+关键失败单独列出，执行或裁判错误、缺失反馈及不完整覆盖均失败。模型裁判可能误判，仍需人工复核。
+历史基线原样保留，不用另一评分器的分数覆盖；在 LangSmith 内比较评分配置一致的实验。
+实验记录包含模型、评分器版本和提示词哈希、用例哈希、Agent源码哈希、Git revision及未提交标记。
+本地完整报告与合成工作区位于忽略的 `artifacts/golden/`，最新摘要为 `latest.json`。
 
-`.github/workflows/evaluation.yml` 已配置手动触发与 main 分支相关文件变更触发；`.github/workflows/ci.yml` 执行无付费调用的代码检查与测试。工作流随代码发布。真实评测需在仓库 Actions Secrets 配置 `DASHSCOPE_API_KEY`、`LANGSMITH_API_KEY`；不要把密钥填入工作流源码。缺少配置时，push 触发的真实评测会明确跳过并写入任务摘要；手动触发则报错，避免把未执行的评测当作通过。实际评测失败会保留报告并使任务失败。
+只保留 `.github/workflows/agent-regression.yml`，免费检查后执行真实模型实验，
+不再重复运行另一套10条用例流程。真实评测依赖 `golden-evaluation` 环境中的
+`DASHSCOPE_API_KEY`、`LANGSMITH_API_KEY`；托管提示词可配置固定版本 `LANGSMITH_PROMPT_REF`。
+缺少配置明确失败；报告在失败时仍上传。`--judge` 为兼容选项，正式实验始终启用质量评分。
+
+2026-11-03 本地完整检查通过：449项Python、17项Node、Ruff，真实场景122/122，关键失败0。
+[本轮实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=173b3a07-4b76-4edf-9b73-613c344c5833) 为 `personal-assistant-golden-5cbfc3b8`；
+源码指纹核验、完整日志与先前两次中止记录位于 `artifacts/ci/native-evaluation/`。
+云托管与GitHub Actions结果应分别核验，不能由本地评估代替。
 
 ## Token 与费用
 

@@ -1,53 +1,68 @@
-"""Synchronize repository-owned synthetic cases without duplicating examples."""
+"""One versioned scenario source synchronized to a LangSmith dataset."""
 
-import hashlib
-import json
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from langsmith import Client
+from personal_assistant_agent.evaluation.golden import load_cases
 
-DEFAULT_DATASET = "personal-assistant-regression-v1"
-DEFAULT_CASES = Path("evaluations/assistant-v1.json")
+DEFAULT_CASES = Path(__file__).resolve().parents[3] / "evaluations/golden/cases.json"
+DEFAULT_DATASET = "personal-assistant-golden-v2"
 
 
-def sync_dataset(client: Client, path: Path = DEFAULT_CASES, name: str = DEFAULT_DATASET):
-    raw = path.read_bytes()
-    cases = json.loads(raw)
-    if not cases or len({c["id"] for c in cases}) != len(cases):
-        raise ValueError("Evaluation cases must have unique identifiers")
-    version = hashlib.sha256(raw).hexdigest()
+def examples(path=DEFAULT_CASES):
+    cases, version = load_cases(path)
+    return [
+        {
+            "inputs": {"case": case.model_dump()},
+            "outputs": {
+                "rubric": case.rubric,
+                "checks": [t.checks.model_dump() for t in case.turns],
+            },
+            "metadata": {
+                "case_id": case.id,
+                "dimension": case.dimension,
+                "critical": case.critical,
+                "synthetic": True,
+                "source_hash": version,
+            },
+        }
+        for case in cases
+    ], version
+
+
+def sync_dataset(client, path=DEFAULT_CASES, name=DEFAULT_DATASET):
+    records, version = examples(path)
     dataset = next(client.list_datasets(dataset_name=name, limit=1), None)
     if dataset is None:
         dataset = client.create_dataset(
             name,
-            description="个人智能助理回归评测：合成样例，不包含用户聊天记录。",
-            metadata={"source": "repository", "synthetic": True},
+            description="Versioned synthetic Agent scenarios; no user conversations",
+            metadata={"synthetic": True},
         )
     existing = {str(e.id): e for e in client.list_examples(dataset_id=dataset.id)}
+    desired = {
+        uuid5(NAMESPACE_URL, "personal-assistant:" + name + ":" + r["metadata"]["case_id"]): r
+        for r in records
+    }
+    if set(existing) - {str(identifier) for identifier in desired}:
+        raise ValueError(
+            "Dataset contains extra examples; review them instead of silently deleting"
+        )
     create = []
-    for case in cases:
-        identifier = uuid5(NAMESPACE_URL, "personal-assistant:" + name + ":" + case["id"])
-        example = {
-            "id": identifier,
-            "inputs": case["inputs"],
-            "outputs": case["reference"],
-            "metadata": {
-                "case_id": case["id"],
-                "category": case["category"],
-                "source_hash": version,
-            },
-        }
+    for identifier, record in desired.items():
         previous = existing.get(str(identifier))
         if previous is None:
-            create.append(example)
-        elif previous.inputs != example["inputs"] or previous.outputs != example["outputs"]:
+            create.append({"id": identifier, **record})
+            continue
+        metadata = previous.metadata or {}
+        if (
+            previous.inputs != record["inputs"]
+            or previous.outputs != record["outputs"]
+            or any(metadata.get(k) != v for k, v in record["metadata"].items())
+        ):
             client.update_example(
-                identifier,
-                inputs=example["inputs"],
-                outputs=example["outputs"],
-                metadata=example["metadata"],
+                identifier, **{**record, "metadata": {**metadata, **record["metadata"]}}
             )
     if create:
         client.create_examples(dataset_id=dataset.id, examples=create)
-    return dataset, version, len(cases)
+    return dataset, version, len(records)

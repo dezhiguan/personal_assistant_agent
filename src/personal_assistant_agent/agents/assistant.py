@@ -60,6 +60,31 @@ def reject_secret_disclosure(state, runtime):
     return None
 
 
+def calendar_capability_guard(tools):
+    available = {tool.name for tool in tools}
+
+    @before_model(state_schema=AssistantState, can_jump_to=["end"])
+    def unavailable_calendar(state, runtime):
+        user = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
+        text = str(user.content)
+        if (
+            "create_calendar_event" not in available
+            and re.search(r"(?:创建|新建|添加|设置|安排).{0,12}(?:日历|日程)", text)
+            and not re.search(r"起草|撰写|文案|模板|代码|\bICS\b|\.ics\b", text, re.I)
+        ):
+            return {
+                "messages": [
+                    AIMessage(
+                        content="当前未提供日历创建工具，无法直接创建会议。可以先准备会议内容。"
+                    )
+                ],
+                "jump_to": "end",
+            }
+        return None
+
+    return unavailable_calendar
+
+
 @before_model(state_schema=AssistantState)
 def initialize_plan(state, runtime):
     """Seed explicit multi-deliverable requests before any work is performed."""
@@ -606,6 +631,7 @@ def _build_agent(
             *([control] if control else []),
             *([ChatReadOnlyMiddleware()] if read_only else []),
             reject_secret_disclosure,
+            calendar_capability_guard(agent_tools),
             ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=settings.max_tool_calls, exit_behavior="error"),
             planning_context,

@@ -68,6 +68,24 @@ def repeated_read(messages):
     return len(reads) >= 2 and reads[-1][0] == reads[-2][0]
 
 
+def advice_only(text):
+    return bool(
+        re.search(
+            r"(?:未经.{0,10}确认|确认之前|先.{0,12}建议|只.{0,6}建议)"
+            r".{0,40}(?:不要|禁止|不).{0,8}(?:修改|删除|写入)",
+            text,
+        )
+    )
+
+
+def authorized_tools(messages, tools):
+    """Apply explicit user authorization independently of token-window settings."""
+    user = latest_user(messages)
+    if not user or not advice_only(str(user.content)):
+        return tools
+    return [t for t in tools if tool_name(t) not in MUTATING]
+
+
 def selected_tools(messages, tools):
     user = latest_user(messages)
     text = str(user.content) if user else ""
@@ -75,13 +93,7 @@ def selected_tools(messages, tools):
         return []
     if repeated_read(messages):
         return []
-    advice_only = bool(
-        re.search(
-            r"(?:未经.{0,10}确认|确认之前|先.{0,12}建议|只.{0,6}建议).{0,40}(?:不要|禁止|不).{0,8}(?:修改|删除|写入)",
-            text,
-        )
-    )
-    return [t for t in tools if not advice_only or tool_name(t) not in MUTATING]
+    return authorized_tools(messages, tools)
 
 
 def tool_name(tool):
