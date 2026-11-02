@@ -34,6 +34,17 @@ def requests_sensitive_disclosure(text: str) -> bool:
     return False
 
 
+def name_only_request(request: str) -> bool:
+    return bool(
+        re.search(
+            r"(?:只|仅)(?:回答|回复|输出)\s*(?:你的?)?(?:正式)?(?:名称|名字|姓名)"
+            r"(?:即可)?\s*[。.!！?？]?\s*$",
+            request,
+        )
+        and re.search(r"你(?:的)?(?:正式)?名|你叫什么", request)
+    )
+
+
 def name_only_answer(request: str, answer: str) -> str | None:
     """Strip a self-introduction wrapper only when the user requested a name alone."""
     if not re.search(r"(?:只|仅)(?:回答|回复|输出)", request) or not re.search(
@@ -98,6 +109,10 @@ def delivery_monologue(request: str, answer: str) -> bool:
     text = answer.strip()
     if not text or text in request or not re.search(r"(?:只|仅)(?:回答|回复|输出|返回)", request):
         return False
+    if name_only_request(request) and (
+        "\n" in text or re.search(r"[，。；！？]", text.rstrip("。.!！?？"))
+    ):
+        return True
     return bool(
         re.match(r"(?:用户|我(?:应该|需要|应当)|The user|I (?:need|should|must))", text, re.I)
         and re.search(

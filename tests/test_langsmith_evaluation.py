@@ -81,6 +81,18 @@ def test_official_openevals_parsing_with_fake_model(monkeypatch, response, passe
             )[1]
         )
         assert actual_input["initial_todos"] == [{"content": "原有待办", "status": "pending"}]
+        assert actual_input["user_turns"] == [
+            {
+                "turn": 1,
+                "role": "user",
+                "content": "将“你好，世界！”翻译为英文，只输出译文。",
+            }
+        ]
+        actual_output = json.loads(
+            re.search(r"<output>\s*(.*?)\s*</output>", payload["messages"][-1]["content"], re.S)[1]
+        )
+        assert actual_output[0]["role"] == "assistant"
+        assert actual_output[0]["tool_receipts"][0]["outputs"]["exit_code"] == 1
         reference = json.loads(
             re.search(
                 r"<reference_outputs>\s*(.*?)\s*</reference_outputs>",
@@ -119,6 +131,14 @@ def test_official_openevals_parsing_with_fake_model(monkeypatch, response, passe
             monkeypatch.setattr(evaluators, "build_model", lambda *a, **k: model)
             item = native_result()
             item["example"].inputs["case"]["todos"] = [{"content": "原有待办", "status": "pending"}]
+            item["run"].outputs["turns"][0]["tools"] = ["execute"]
+            item["run"].outputs["turns"][0]["tool_receipts"] = [
+                {
+                    "name": "execute",
+                    "inputs": {"command": "cat /../blocked"},
+                    "outputs": {"exit_code": 1, "output": "PermissionError"},
+                }
+            ]
             score = await evaluators.make_quality_evaluator(Settings())(
                 item["example"].inputs, item["run"].outputs, item["example"].outputs
             )

@@ -10,7 +10,7 @@
 
 | 文档 | 说明 | 状态 |
 | --- | --- | --- |
-| [design/full-duplex-agent-interaction.html](design/full-duplex-agent-interaction.html) | **技术设计**：全双工 Agent 交互，持续追加对话与同任务要求合并列为第一优先级；含“全球新闻改国内”及连续修正用例、10 个用户用例、架构、状态隔离、持久恢复与验收方案 | P1a 与 P1b 主链路已实现；本地完整门禁通过（2026-11-03，449项Python / 17项Node / 122次真实场景；历史失败与剩余限制见实施记录） |
+| [design/full-duplex-agent-interaction.html](design/full-duplex-agent-interaction.html) | **技术设计**：全双工 Agent 交互，持续追加对话与同任务要求合并列为第一优先级；含“全球新闻改国内”及连续修正用例、10 个用户用例、架构、状态隔离、持久恢复与验收方案 | P1a 与 P1b 主链路已实现；本地完整门禁通过（2026-11-03，459项Python / 17项Node / 122次真实场景；历史CI失败与剩余限制见实施记录） |
 
 ## Research
 

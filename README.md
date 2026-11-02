@@ -310,8 +310,8 @@ docker run --rm --env-file .env -p 127.0.0.1:8000:8000 \
 
 ## 多维度黄金集与回归门禁
 
-2026-11-03 本地完整 `make agent-check` 通过：449项 Python、17项前端、Ruff、真实场景122/122，关键失败0。
-[查看原生 LangSmith 实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=cfe955ea-7739-4be2-8db6-28da8c75cc87)。用例与历史基线未修改；CI结果需按对应提交核验。
+2026-11-03 本地完整 `make agent-check` 通过：459项 Python、17项前端、Ruff、真实场景122/122，关键失败0。
+[查看原生 LangSmith 实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=711831f6-1005-449b-91c7-f82a3eb9191e)。用例与历史基线未修改；CI结果需按对应提交核验。
 
 黄金集位于 `evaluations/golden/cases.json`，目前包含 **61条用例、12个维度**：
 
@@ -352,7 +352,7 @@ make golden-offline
 17条无需模型的用例也纳入 pytest，`make golden-offline` 单独执行34次检查，不访问模型或云服务。
 
 Agent 与裁判均只调用 `qwen3.8-flash`。开放题通过项目规则后，使用官方 OpenEvals Correctness
-评分器评估实际回复、待办与工具调用，最低分0.8；精确答案、结构化题和完整文件断言直接程序核验。
+评分器评估实际回复、待办、工具调用及原生回执，最低分0.8；精确答案、结构化题和完整文件断言直接程序核验。
 保留项目特有的权限、文件、待办和交付断言，模型评分不能代替这些事实核验。
 字符数和JSON格式由程序严格核验；语义裁判只评事实与内容，不凭估算重新判定格式和长度。
 裁判异常、反馈缺失或评测未完成均失败。裁判可能误判，需查看具体证据并人工复核。

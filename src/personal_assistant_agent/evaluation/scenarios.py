@@ -1,14 +1,15 @@
 """Project-specific test environment; execution stays in the real Agent Harness."""
 
 import asyncio
+import json
 import os
 import time
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 from uuid import uuid4
 
-from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.tools import tool
+from langchain_core.tracers.run_collector import RunCollectorCallbackHandler
 from langsmith import get_current_run_tree
 from pydantic import ValidationError
 
@@ -64,22 +65,39 @@ def boundary(case, directory):
         return []
 
 
-class ToolNames(BaseCallbackHandler):
-    def __init__(self):
-        self.names = []
-
-    def on_tool_start(self, serialized, input_str, **kwargs):
-        self.names.append((serialized or {}).get("name", "unknown"))
+def tool_receipts(runs, secrets=()):
+    """Use native trace records, retaining actual outcomes and removing credential values."""
+    pending, seen, records = list(runs), set(), []
+    while pending:
+        run = pending.pop()
+        if run.id in seen:
+            continue
+        seen.add(run.id)
+        pending.extend(run.child_runs or [])
+        if run.run_type != "tool":
+            continue
+        record = run.model_dump(
+            mode="json", include={"id", "name", "inputs", "outputs", "start_time"}
+        )
+        record["error"] = bool(run.error)
+        serialized = json.dumps(record, ensure_ascii=False)
+        for secret in secrets:
+            if secret:
+                serialized = serialized.replace(
+                    json.dumps(secret, ensure_ascii=False)[1:-1], "[redacted]"
+                )
+        records.append(json.loads(serialized))
+    return sorted(records, key=lambda record: record["start_time"])
 
 
 class ObservedGraph:
-    def __init__(self, graph, names):
-        self.graph, self.names = graph, names
+    def __init__(self, graph, collector):
+        self.graph, self.collector = graph, collector
 
     def astream(self, value, *, config, **kwargs):
         return self.graph.astream(
             value,
-            config={**config, "callbacks": [*config.get("callbacks", []), self.names]},
+            config={**config, "callbacks": [*config.get("callbacks", []), self.collector]},
             **kwargs,
         )
 
@@ -132,11 +150,14 @@ class ScenarioTarget:
                 graph = await asyncio.to_thread(
                     build_agent, scoped, tools=fixture_tools(case), prompt=self.prompt
                 )
-                names = ToolNames()
-                service = ChatService(ObservedGraph(graph, names), scoped)
+                collector = RunCollectorCallbackHandler()
+                secrets = [
+                    getattr(scoped, field.name) for field in fields(scoped) if not field.repr
+                ]
+                service = ChatService(ObservedGraph(graph, collector), scoped)
                 history, todos, conversation = [], case.todos, uuid4()
                 for turn in case.turns:
-                    names.names.clear()
+                    collector.traced_runs.clear()
                     payload = ChatRequest(
                         conversation_id=conversation,
                         messages=[*history, {"role": "user", "content": turn.prompt}],
@@ -150,11 +171,13 @@ class ScenarioTarget:
                     errors = [
                         e.get("code", "service_error") for e in events if e["type"] == "error"
                     ]
+                    receipts = tool_receipts(collector.traced_runs, secrets)
                     result["turns"].append(
                         {
                             "answer": answer,
                             "todos": todos,
-                            "tools": list(names.names),
+                            "tools": [receipt["name"] for receipt in receipts],
+                            "tool_receipts": receipts,
                             "done": any(e["type"] == "done" for e in events),
                             "errors": errors,
                         }
