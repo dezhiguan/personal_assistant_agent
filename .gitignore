@@ -24,3 +24,6 @@ artifacts/
 .langgraph_api/
 workspace/
 .assistant-private/
+
+workspace-tasks/
+workspace-chats/

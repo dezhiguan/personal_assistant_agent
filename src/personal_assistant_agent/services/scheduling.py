@@ -1,5 +1,6 @@
 """Validate every allocation, including fixed work, capacity and precedence."""
 
+import json
 import math
 import re
 
@@ -45,19 +46,44 @@ def serial_contract(text):
         return None
     capacity = float(capacity[1])
     tasks = [(name, float(duration)) for name, duration in tasks]
-    if capacity <= 0 or any(d <= 0 for _, d in tasks):
+    if (
+        not math.isfinite(capacity)
+        or capacity <= 0
+        or any(not math.isfinite(d) or d <= 0 for _, d in tasks)
+    ):
         return None
     return tasks, capacity
 
 
 def verified_serial_answer(text):
-    if re.search(r"JSON", text, re.I):
-        return None  # JSON delivery has its own strict protocol validator.
     contract = serial_contract(text)
     if not contract:
         return None
     tasks, capacity = contract
     total = math.fsum(d for _, d in tasks)
+    if re.search(r"JSON", text, re.I):
+        # This named feasibility schema has a deterministic answer from the
+        # immutable workload; model-generated allocations cannot redefine it.
+        schema = re.split(r"JSON", text, flags=re.I)[-1]
+        fields = set(re.findall(r"[A-Za-z_][A-Za-z_0-9]*", schema)) - {"true", "false"}
+        if re.search(r"今天|当天", text) and fields == {
+            "total_hours",
+            "shortfall_hours",
+            "feasible",
+        }:
+            return json.dumps(
+                {
+                    "total_hours": int(total) if total.is_integer() else total,
+                    "shortfall_hours": (
+                        int(max(0, total - capacity))
+                        if float(max(0, total - capacity)).is_integer()
+                        else total - capacity
+                    ),
+                    "feasible": total <= capacity,
+                },
+                ensure_ascii=False,
+            )
+        return None
     parts = [f"固定串行工时共{total:g}小时，每日上限{capacity:g}小时。"]
     parts.append(
         "当天可行。" if total <= capacity else f"当天不可行，缺口{total - capacity:g}小时。"

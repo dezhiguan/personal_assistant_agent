@@ -32,6 +32,9 @@ class Settings:
     langsmith_endpoint: str = "https://api.smith.langchain.com"
     prompt_ref: str = ""
     workspace_dir: str = "workspace"
+    interaction_dir: str = ".assistant-private/interaction"
+    task_concurrency: int = 2
+    interaction_queue_limit: int = 32
     baidu_timeout: float = 10
     baidu_proxy: str = field(default="", repr=False)
     tool_timeout: float = 15
@@ -86,6 +89,9 @@ def get_settings() -> Settings:
         langsmith_endpoint=os.getenv("LANGSMITH_ENDPOINT", "https://api.smith.langchain.com"),
         prompt_ref=os.getenv("LANGSMITH_PROMPT_REF", "").strip(),
         workspace_dir=os.getenv("ASSISTANT_WORKSPACE_DIR", "workspace").strip(),
+        interaction_dir=os.getenv("ASSISTANT_INTERACTION_DIR", ".assistant-private/interaction"),
+        task_concurrency=int(os.getenv("ASSISTANT_TASK_CONCURRENCY", "2")),
+        interaction_queue_limit=int(os.getenv("ASSISTANT_QUEUE_LIMIT", "32")),
         baidu_timeout=float(os.getenv("BAIDU_TIMEOUT_SECONDS", "10")),
         baidu_proxy=os.getenv("BAIDU_HTTP_PROXY", "").strip(),
         tool_timeout=float(os.getenv("TOOL_TIMEOUT_SECONDS", "15")),

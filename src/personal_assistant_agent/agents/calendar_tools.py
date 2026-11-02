@@ -57,7 +57,10 @@ def build_calendar_tools(settings: Settings) -> list:
             raise ToolError("结束时间必须晚于开始时间。")
         if reminder_minutes is not None and not 0 <= reminder_minutes <= 525600:
             raise ToolError("提醒提前分钟数须为 0–525600。")
-        event_id = uuid4().hex
+        from personal_assistant_agent.interaction.middleware import operation_id
+
+        stable_id = operation_id.get()
+        event_id = stable_id[:32] if stable_id else uuid4().hex
 
         def stamp(value):
             return value.strftime("%Y%m%dT%H%M%SZ")
@@ -88,8 +91,22 @@ def build_calendar_tools(settings: Settings) -> list:
         content = "\r\n".join(fold(line) for line in lines) + "\r\n"
         backend = WorkspaceBackend(settings.workspace_dir)
         path = f"/calendar/{event_id}.ics"
-        result = backend.write(path, content)
-        if result.error:
+        # Replayed task operations retain the same UID and file. DTSTAMP records
+        # the first successful write; it is not part of the semantic payload.
+        if stable_id and backend._resolve_path(path).is_file():
+            previous = backend._text(path)
+
+            def normalize(value):
+                return "\r\n".join(
+                    line for line in value.splitlines() if not line.startswith("DTSTAMP:")
+                )
+
+            if normalize(previous) != normalize(content):
+                raise ToolError("日历操作 ID 对应的内容不同，需要核对。")
+            result = None
+        else:
+            result = backend.write(path, content)
+        if result and result.error:
             raise ToolError("日历文件未保存，请检查工作区权限。")
         return {
             "status": "pending_import",

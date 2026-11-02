@@ -97,14 +97,35 @@ uv run python scripts/evaluate_agent.py --judge
 ## 已实现的流程
 
 - 输入或选择开场建议，发送消息并逐步显示模型回复。
-- 同一会话连续追问，前端明确传递当前对话历史。
+- 同一会话可连续发送消息；后台任务、任务修正和普通聊天使用独立通道。
 - 新建与切换对话互不混用；刷新后恢复本机记录。
-- 生成时可停止，浏览器中止请求并取消服务端生成任务。
+- 可停止单条普通回复，或对指定后台任务暂停、恢复、取消；关闭页面不取消后台任务。
 - 错误明确提示，可重新生成，不重复追加用户消息。
 - 回复按富文本排版，支持标题、加粗、列表、代码块和表格；历史与流式回复使用同一套渲染。
 - 复制回答、清空本机记录，适配手机和桌面。
 
-助理启用规划、工作区文件工具、受限 `execute`、`task` 子代理和下述三个自定义工具。每次运行不使用共享 checkpointer；后端不保存跨会话聊天历史。单条消息最多 8000 字符，一次最多 60 条、总计 80000 字符，超限会提示新建对话。超长对话不会静默截断。
+助理启用规划、工作区文件工具、受限 `execute`、`task` 子代理和下述三个自定义工具。旧 `/api/chat` 保留请求级执行；新增任务使用独立 thread、官方 SQLite Checkpointer 和持久消息/控制/事件日志。单条消息最多 8000 字符，一次最多 60 条、总计 80000 字符，超限会提示新建对话。超长对话不会静默截断。
+
+## 全双工交互
+
+任务运行中可以继续发送消息。例如“搜索全球新闻”之后连续说“就搜索国内”“最近三天的”“只看科技”，会合并成同一任务的新要求；插入概念问答不会清除已接受条件。界面分别显示“指令已收到”和“已应用”。运行中工具可以先返回，下一安全边界再应用修正；不会以取消重启任务模拟 Steering。任务终态之后的修正会创建关联原成果的修订任务。
+
+默认同时执行两个后台任务，其余排队。普通聊天按会话顺序回复，工具和模型预算独立于后台任务；状态查询和显式控制不依赖模型。发送方式可选自动关联、独立聊天、新任务或具体任务；歧义目标会提示选择。暂停等待当前工具/同步子代理结束；恢复沿同一 Thread 继续。取消不回滚文件或订单，未知写操作进入核对状态，不自动重放。
+
+新增接口：
+
+- `POST /api/conversations/{id}/messages`：`client_message_id`、`content`，可选 `intent`、`target_task_id`。
+- `GET /api/conversations/{id}/tasks`：任务、持久消息与一致快照游标。
+- `GET /api/tasks/{id}?conversation_id=...`：真实状态、要求版本、控制记录、进度。
+- `POST /api/tasks/{id}/controls`：`conversation_id`、`control_id`、`type`（STEER/PAUSE/RESUME/CANCEL），可选 `content`、`expected_revision`。
+- `POST /api/conversations/{id}/chats/{message_id}/stop`：只停止指定普通回复。
+- `GET /api/conversations/{id}/events?after=...`：SSE；支持 `Last-Event-ID`，断线不取消执行。
+
+运行时限定单机单进程，文件锁拒绝第二实例。默认私有数据位于 `.assistant-private/interaction/`（目录 0700，数据库 0600）。部署时持久保存该目录、`workspace-tasks/` 和 `workspace-chats/`；仅保存数据库不能恢复文件成果。版本或提示词不兼容、预算耗尽、外部写操作未知时会阻止自动继续。跨任务共享文件写入、子代理内部立即暂停与多实例调度尚不提供。普通聊天仅允许只读工具；执行操作应提交为任务。旧 `/api/chat` 的工具与授权流程保持兼容。
+
+CLI 启动时将 HTTP 退出等待设为 5 秒，避免 SSE 长连接阻塞停机；随后执行器通过 RunControl 等当前工具批次安全收尾并保存 checkpoint。直接运行 Uvicorn 时须传 `--timeout-graceful-shutdown 5`；宿主的最终强制终止期限仍需覆盖慢工具，超期强杀走磁盘崩溃恢复流程。
+
+实现与验收证据见 [全双工交互设计的实施记录](docs/design/full-duplex-agent-interaction.html#implementation)。
 
 ## 执行能力与工作区
 
@@ -115,7 +136,7 @@ uv run python scripts/evaluate_agent.py --judge
 - `execute` 是受限命令解释器，实际运行允许的文件操作；不启动宿主 Shell 或任意子进程。支持 `pwd`、`ls [path]`、`cat file...`、`head/tail [-n 1..1000] file`、`wc [-l|-w|-c] file`、`mkdir [-p] path`、`touch file`、`echo text...`。不支持脚本、Python、安装软件、联网命令、管道、重定向、变量展开和串联；写内容请用文件工具。命令输入最多 4096 字符，单文件读取最多 1 MiB，输出最多 16000 字符，截断会显式标识；可选 `timeout` 仅接受 1–30 秒，这些本地文件操作不提供可强制中断的进程超时。
 - `task` 启用 `general-purpose` 子代理，继承相同的工作区、三个自定义工具和执行规则。复杂独立任务可以委派，简单聊天和单次工具操作无需计划或子代理。
 
-这是本机单用户、可信本地文件系统上的应用级边界，未提供容器/虚拟机隔离或多租户权限。所有会话和子代理共享同一磁盘工作区；清空浏览器对话不会删除文件。不要让不可信本地进程并发修改工作区或放入链接，也不要在其中存放 `.env`、密钥或其他秘密。文件覆盖和删除会真实生效；停止生成和失败不会回滚已落盘的改动，重试前应核对已有文件。任意代码执行需要另行接入真正隔离的后端，不能直接换成仅设置 `cwd` 的本机 Shell。有关原生 Shell 的边界见 [Deep Agents 官方说明](https://reference.langchain.com/python/deepagents/backends/local_shell)。
+这是本机单用户、可信本地文件系统上的应用级边界，未提供容器/虚拟机隔离或多租户权限。旧 `/api/chat` 共用原工作区；新任务及其子代理使用 `workspace-tasks/{task_id}/`，普通聊天使用 `workspace-chats/{conversation_id}/`，均位于旧根目录外。清空浏览器记录不会删除文件或取消后台任务。不要让不可信本地进程并发修改工作区或放入链接，也不要在其中存放 `.env`、密钥或其他秘密。文件覆盖和删除会真实生效；停止生成和失败不会回滚已落盘的改动，重试前应核对已有文件。任意代码执行需要另行接入真正隔离的后端，不能直接换成仅设置 `cwd` 的本机 Shell。有关原生 Shell 的边界见 [Deep Agents 官方说明](https://reference.langchain.com/python/deepagents/backends/local_shell)。
 
 ## 生活查询、旅行、日历与提醒
 
@@ -155,9 +176,9 @@ BAIDU_HTTP_PROXY=
 
 例如：「帮我准备项目周报，先拆成待办，再依次整理目标、进展、风险和下周计划」。随后可以补充「本周有一项延期，先处理风险」，让助理调整后续步骤。刷新浏览器会恢复计划；停止或失败后保留已收到的状态，未完成的步骤显示「待继续」。
 
-计划随每条助理回复保存在当前浏览器；后续请求携带当前会话最新有效的 `todos`，无需共享服务端状态。重试从当前回复之前的计划重新开始，新会话从空计划开始。每份计划最多 32 步，每步最多 500 字。规划跟踪实际文件操作、命令执行、检索与分析工作；仅提出建议或完成委派不等于已经执行。
+旧 `/api/chat` 的计划随回复保存在浏览器，后续请求携带最新 `todos`；新任务的计划由独立 Thread 和 Checkpointer 持久保存，普通聊天不会继承或修改它。重试从当前回复之前的计划重新开始，新会话从空计划开始。每份计划最多 32 步，每步最多 500 字。规划跟踪实际文件操作、命令执行、检索与分析工作；仅提出建议或完成委派不等于已经执行。
 
-`MODEL_MAX_OUTPUT_TOKENS` 控制单次输出，默认8192，避免长文件工具参数因2048 token上限被截断；`MODEL_TIMEOUT_SECONDS` 控制单次模型调用的超时；`WORKFLOW_TIMEOUT_SECONDS` 控制整轮工作流，默认1200秒。图执行步骤包含中间件，并不等于工具调用次数，默认 `AGENT_RECURSION_LIMIT=2048`；主代理另设 `AGENT_MAX_MODEL_CALLS=96`、`AGENT_MAX_TOOL_CALLS=256` 防止无界调用。达到上限会明确说明步骤、调用次数或总时限原因；文件操作不会自动回滚，继续前应核对已有成果。停止生成仍会立即取消当前请求。
+`MODEL_MAX_OUTPUT_TOKENS` 控制单次输出，默认8192，避免长文件工具参数因2048 token上限被截断；`MODEL_TIMEOUT_SECONDS` 控制单次模型调用的超时；`WORKFLOW_TIMEOUT_SECONDS` 控制整轮工作流，默认1200秒。图执行步骤包含中间件，并不等于工具调用次数，默认 `AGENT_RECURSION_LIMIT=2048`；主代理另设 `AGENT_MAX_MODEL_CALLS=96`、`AGENT_MAX_TOOL_CALLS=256` 防止无界调用。达到上限会明确说明步骤、调用次数或总时限原因；文件操作不会自动回滚，继续前应核对已有成果。旧请求与普通回复可停止本条生成；后台任务取消等待安全执行边界。
 
 小窗口模拟可在服务端 `.env` 设置以下配置，重启服务后生效：
 
@@ -167,7 +188,7 @@ MODEL_CONTEXT_OUTPUT_RESERVE_TOKENS=2048
 MODEL_CONTEXT_TOOL_NAMES=baidu_search,get_current_time,calculate,validate_time_budget
 ```
 
-模拟模式先用本地估算引导 Deep Agents 压缩历史，把原始记录归档到工作区 `conversation_history/`，保留约512 Token的近期消息，摘要输出最多384 Token。发送前再调用百炼 `messages/count_tokens`，核验系统提示词、工具定义、历史及工具结果的完整请求；主代理输入计数上限为6016 Token，另预留2048输出与128协议余量，总计8192；摘要使用384输出上限，对应输入上限7680。主代理、摘要与通用子代理的同步和流式调用均经过传输层检查；无法压缩时返回 `MODEL_CONTEXT_LIMIT`，预检接口不可用时返回 `MODEL_TOKEN_COUNT_UNAVAILABLE`，不跳过检查继续生成。接口使用当前百炼密钥和同源地址，暂只支持文本请求。生成后还核对真实 usage，超限立即报错且保留已发生的用量。云端模型本身的物理窗口不变；跨请求仍由浏览器回传原始对话，长历史可能再次触发压缩。
+模拟模式先用本地估算引导 Deep Agents 压缩历史，把原始记录归档到工作区 `conversation_history/`，保留约512 Token的近期消息，摘要输出最多384 Token。发送前再调用百炼 `messages/count_tokens`，核验系统提示词、工具定义、历史及工具结果的完整请求；主代理输入计数上限为6016 Token，另预留2048输出与128协议余量，总计8192；摘要使用384输出上限，对应输入上限7680。主代理、摘要与通用子代理的同步和流式调用均经过传输层检查；无法压缩时返回 `MODEL_CONTEXT_LIMIT`，预检接口不可用时返回 `MODEL_TOKEN_COUNT_UNAVAILABLE`，不跳过检查继续生成。接口使用当前百炼密钥和同源地址，暂只支持文本请求。生成后还核对真实 usage，超限立即报错且保留已发生的用量。云端模型本身的物理窗口不变；旧 `/api/chat` 由浏览器回传历史，新普通聊天从服务端已持久化消息投影，长历史可能再次触发压缩；后台任务从自己的 Checkpointer 增量继续。
 
 独立的寒暄或身份问题（如“你是谁”）只发送当前问题和系统规则，不读取旧任务或调用工具，浏览器中的完整历史与待办仍保留。依赖历史的提问继续走原有压缩路径。同一轮相同参数的成功只读调用可复用结果；发生文件修改或切换轮次后失效，连续重复读取时停止继续调用工具。
 
@@ -276,7 +297,11 @@ Dockerfile 使用 Python 3.13 和 uv，容器以非 root 用户运行。以下�
 
 ```bash
 docker build -t personal-assistant-agent .
-docker run --rm --env-file .env -p 127.0.0.1:8000:8000 personal-assistant-agent
+docker run --rm --env-file .env -p 127.0.0.1:8000:8000 \
+  -v assistant-private:/app/.assistant-private \
+  -v assistant-workspace:/app/workspace \
+  -v assistant-tasks:/app/workspace-tasks \
+  -v assistant-chats:/app/workspace-chats personal-assistant-agent
 ```
 
 镜像预建 `/app/workspace` 并授予运行用户访问权限。默认文件随容器删除而丢失；需要持久化时挂载仅包含工作区的专用卷（如 `-v assistant-workspace:/app/workspace`），不要挂载宿主项目、主目录或密钥目录。自定义目录必须预先授予非 root 运行用户写权限。

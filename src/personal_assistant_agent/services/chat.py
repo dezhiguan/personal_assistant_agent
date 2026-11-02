@@ -23,7 +23,12 @@ from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.observability.costs import estimate_calls
 from personal_assistant_agent.observability.timeline import InvocationCollector, measured_stream
 from personal_assistant_agent.observability.tracer import CostTracer
-from personal_assistant_agent.schemas.chat import ChatRequest, TodoList, ToolProgress
+from personal_assistant_agent.schemas.chat import (
+    ChatRequest,
+    StoredChatRequest,
+    TodoList,
+    ToolProgress,
+)
 from personal_assistant_agent.services.plan_edits import explicit_edit
 
 logger = logging.getLogger(__name__)
@@ -107,7 +112,9 @@ class ChatService:
             else None
         )
 
-    async def stream(self, payload: ChatRequest, request_id: str) -> AsyncIterator[dict]:
+    async def stream(
+        self, payload: ChatRequest | StoredChatRequest, request_id: str
+    ) -> AsyncIterator[dict]:
         queue = asyncio.Queue()
         usage_collector = InvocationCollector(self.settings, queue)
         callbacks = (

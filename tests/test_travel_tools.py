@@ -258,3 +258,132 @@ def test_actual_graph_injects_runtime_and_prepares_without_ordering(travel):
         )
     assert result["messages"][-1].content == "等待用户确认"
     assert not submitted
+
+
+@pytest.mark.parametrize("revise", [False, True])
+def test_durable_task_confirmation_uses_referenced_quote_scope_and_fresh_turn(
+    travel, tmp_path, monkeypatch, revise
+):
+    """New task API preserves the real quote/CAS workflow, without borrowing other tasks' grants."""
+    from uuid import uuid4
+
+    from langchain_core.messages import AIMessageChunk, HumanMessage
+    from langchain_core.outputs import ChatGenerationChunk
+
+    from personal_assistant_agent.interaction.runtime import InteractionRuntime
+
+    _, _, _, submitted, _, _ = travel
+    prepared = {}
+
+    async def generate(self, messages, **kwargs):
+        latest = next(m.content for m in reversed(messages) if isinstance(m, HumanMessage))
+        results = [m for m in messages if isinstance(m, ToolMessage)]
+        calls = []
+        content = ""
+        if "预订确认=" in latest:
+            if not results:
+                calls = [
+                    {
+                        "name": "book_flight",
+                        "id": "confirmed-book",
+                        "args": {"quote_id": prepared["quote_id"], "profile_name": "synthetic"},
+                    }
+                ]
+            else:
+                if results[-1].status == "error":
+                    content = results[-1].content
+                else:
+                    payload = json.loads(results[-1].content)
+                    assert payload["status"] == "reserved", payload
+                    content = "供应商沙箱已返回预订记录。"
+        elif not results:
+            calls = [
+                {
+                    "name": "search_flights",
+                    "id": "quote-search",
+                    "args": {"origin": "PEK", "destination": "SHA", "departure_date": "2030-01-01"},
+                }
+            ]
+        elif results[-1].name == "search_flights":
+            quote_id = json.loads(results[-1].content)["results"][0]["quote_id"]
+            calls = [
+                {
+                    "name": "book_flight",
+                    "id": "prepare",
+                    "args": {"quote_id": quote_id, "profile_name": "synthetic"},
+                }
+            ]
+        else:
+            prepared.update(json.loads(results[-1].content))
+            content = json.dumps(prepared, ensure_ascii=False)
+        yield ChatGenerationChunk(message=AIMessageChunk(content=content, tool_calls=calls))
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._astream", generate)
+
+    async def until(check):
+        async with asyncio.timeout(10):
+            while not check():
+                await asyncio.sleep(0.01)
+
+    async def check():
+        runtime = await InteractionRuntime(
+            Settings(
+                api_key="synthetic-only", interaction_dir=str(tmp_path / "private-interaction")
+            )
+        ).start()
+        cid, other = str(uuid4()), str(uuid4())
+        try:
+            original = runtime.store.receive(
+                cid,
+                str(uuid4()),
+                "处理航班预订",
+                {"intent": "NEW_TASK", "goal": "处理航班预订"},
+                {},
+            )["task_id"]
+            runtime.wakeup.set()
+            await until(lambda: runtime.store.task(original)["status"] in {"SUCCEEDED", "FAILED"})
+            assert runtime.store.task(original)["status"] == "SUCCEEDED"
+            assert not submitted and prepared["status"] == "requires_confirmation"
+            text = prepared["confirmation_message"]
+            wrong = await runtime.submit(
+                other, {"client_message_id": str(uuid4()), "content": text}
+            )
+            assert wrong["intent"] == "CLARIFY" and not submitted
+            if revise:
+                runtime.model_slots = asyncio.Semaphore(0)
+            payload = {"client_message_id": str(uuid4()), "content": text}
+            ack = await runtime.submit(cid, payload)
+            assert ack["intent"] == "NEW_TASK" and ack["revision_of"] == original
+            assert await runtime.submit(cid, payload) == ack
+            if revise:
+                await until(lambda: runtime.store.task(ack["task_id"])["applied_revision"] == 0)
+                runtime.store.control(
+                    ack["task_id"], cid, str(uuid4()), "STEER", changes={"格式": "简短"}
+                )
+                runtime.model_slots.release()
+            await until(
+                lambda: runtime.store.task(ack["task_id"])["status"] in {"SUCCEEDED", "FAILED"}
+            )
+            followup = runtime.store.task(ack["task_id"])
+            assert followup["status"] == "SUCCEEDED", followup
+            assert followup["authorization"]["task_id"] == ack["task_id"]
+            assert followup["authorization"]["message_id"] == payload["client_message_id"]
+            assert len(submitted) == (0 if revise else 1)
+            if revise:
+                assert "重新" in followup["result"]
+                fresh = await runtime.submit(
+                    cid, {"client_message_id": str(uuid4()), "content": text}
+                )
+                assert fresh["revision_of"] == followup["id"]
+                assert runtime.store.task(fresh["task_id"])["constraints"]["格式"] == "简短"
+                await until(
+                    lambda: (
+                        runtime.store.task(fresh["task_id"])["status"] in {"SUCCEEDED", "FAILED"}
+                    )
+                )
+                assert runtime.store.task(fresh["task_id"])["status"] == "SUCCEEDED"
+                assert len(submitted) == 1
+        finally:
+            await runtime.close()
+
+    asyncio.run(check())

@@ -7,9 +7,9 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --locked --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --locked --no-dev && useradd --create-home assistant \
-    && mkdir -p /app/workspace /app/.assistant-private \
-    && chown assistant:assistant /app/workspace /app/.assistant-private \
-    && chmod 700 /app/workspace /app/.assistant-private
+    && mkdir -p /app/workspace /app/workspace-tasks /app/workspace-chats /app/.assistant-private \
+    && chown assistant:assistant /app/workspace /app/workspace-tasks /app/workspace-chats /app/.assistant-private \
+    && chmod 700 /app/workspace /app/workspace-tasks /app/workspace-chats /app/.assistant-private
 USER assistant
 EXPOSE 8000
 CMD [".venv/bin/personal-assistant-agent", "--host", "0.0.0.0", "--port", "8000"]

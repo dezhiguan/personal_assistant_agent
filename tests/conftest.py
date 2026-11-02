@@ -53,7 +53,14 @@ def graph():
 
 
 @pytest.fixture
-def client(monkeypatch, graph):
+def client(monkeypatch, graph, tmp_path):
     monkeypatch.setattr("personal_assistant_agent.app.build_agent", lambda _: graph)
-    with TestClient(create_app(Settings(api_key="unit-test-only"))) as client:
+    with TestClient(
+        create_app(
+            Settings(
+                api_key="unit-test-only",
+                interaction_dir=str(tmp_path / "private-interaction"),
+            )
+        )
+    ) as client:
         yield client

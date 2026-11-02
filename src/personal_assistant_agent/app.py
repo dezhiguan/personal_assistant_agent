@@ -12,8 +12,10 @@ from personal_assistant_agent.agents.assistant import build_agent
 from personal_assistant_agent.api.calendar import router as calendar_router
 from personal_assistant_agent.api.chat import router as chat_router
 from personal_assistant_agent.api.health import router as health_router
+from personal_assistant_agent.api.interaction import router as interaction_router
 from personal_assistant_agent.api.traces import router as traces_router
 from personal_assistant_agent.core.config import Settings, get_settings
+from personal_assistant_agent.interaction.runtime import InteractionRuntime
 from personal_assistant_agent.services.chat import ChatService
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -33,15 +35,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         service = await asyncio.to_thread(initialize) if settings.model_configured else None
         app.state.settings = settings
         app.state.chat_service = service
-        yield
-        if service:
-            await service.close()
+        interaction = None
+        try:
+            interaction = await InteractionRuntime(settings).start() if service else None
+            app.state.interaction = interaction
+            yield
+        finally:
+            try:
+                if interaction:
+                    await interaction.close()
+            finally:
+                if service:
+                    await service.close()
 
     app = FastAPI(title="个人智能助理", version="0.1.0", lifespan=lifespan)
     app.include_router(health_router)
     app.include_router(traces_router)
     app.include_router(chat_router)
     app.include_router(calendar_router)
+    app.include_router(interaction_router)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)

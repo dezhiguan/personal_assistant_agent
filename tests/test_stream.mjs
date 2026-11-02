@@ -138,3 +138,117 @@ test('billing labels distinguish unknown, local API-free and nested costs', () =
   assert.match(costLabel({ kind: 'tool', tool_cost: { status: 'included' } }), /不重复计费/);
   assert.match(costLabel({ kind: 'model', cost_estimate: { total_cost_cny: 0.000001 } }), /¥0.000001（估算）/);
 });
+
+test('duplex events keep task results and ordinary replies separate and deduplicate replay', async () => {
+  const { reduceEvent } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { messages: [] };
+  const event = (sequence, type, payload, extra = {}) => ({ sequence, type, payload, ...extra });
+  reduceEvent(session, event(1, 'task.created', { id: 'A', status: 'RUNNING', revision: 1 }, { task_id: 'A' }));
+  reduceEvent(session, event(2, 'chat.delta', { text: '普通聊天' }, { chat_message_id: 'chat-1' }));
+  reduceEvent(session, event(3, 'control.received', {}, { task_id: 'A' }));
+  assert.match(session.tasks.A.controlNote, /已收到/);
+  reduceEvent(session, event(4, 'control.applied', { directive_revision: 1 }, { task_id: 'A' }));
+  assert.match(session.tasks.A.controlNote, /已应用/);
+  const final = event(5, 'task.result', { id: 'A', revision: 1, status: 'SUCCEEDED', result: '国内科技新闻' }, { task_id: 'A' });
+  reduceEvent(session, final);
+  assert.equal(reduceEvent(session, final), false);
+  assert.equal(reduceEvent(session, event(1, 'task.state_changed', { status: 'RUNNING' }, { task_id: 'A' })), false);
+  assert.equal(session.messages.find(m => m.replyTo === 'chat-1').text, '普通聊天');
+  assert.equal(session.messages.find(m => m.replyTo === 'task:A').text, '国内科技新闻');
+  assert.equal(session.tasks.A.status, 'SUCCEEDED');
+  reduceEvent(session, event(6, 'chat.settled', { text: '独立回答', error: null }, { chat_message_id: 'chat-1' }));
+  assert.equal(session.messages.find(m => m.replyTo === 'chat-1').state, 'complete');
+});
+
+test('an earlier applied revision cannot acknowledge newer pending requirements', async () => {
+  const { reduceEvent } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { messages: [], tasks: { A: { revision: 3, applied_revision: 0 } } };
+  reduceEvent(session, { sequence: 1, type: 'control.applied', task_id: 'A', payload: { directive_revision: 1 } });
+  assert.equal(session.tasks.A.applied_revision, 1);
+  assert.match(session.tasks.A.controlNote, /等待应用/);
+});
+
+test('reconnecting restores active task and chat states without cancelling either', async t => {
+  const { Duplex } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { id: 'conversation', messages: [
+    { id: 'task-answer', role: 'assistant', replyTo: 'task:A', text: '', state: 'stopped', trace: { state: 'stopped' } },
+    { id: 'chat-answer', role: 'assistant', replyTo: 'chat-A', text: '', state: 'stopped', trace: { state: 'stopped' } },
+  ] };
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    tasks: [{ id: 'A', status: 'RUNNING' }], cursor: 42,
+    messages: [{ id: 'chat-A', role: 'user', kind: 'CHAT', content: '什么是科技', response: '{"pending":true}' }],
+  })));
+  const previous = globalThis.EventSource;
+  globalThis.EventSource = class { close() {} };
+  try {
+    const duplex = new Duplex(() => {}, () => {});
+    await duplex.connect(session);
+    assert.equal(session.messages[0].state, 'streaming');
+    assert.equal(session.messages[0].trace.state, 'running');
+    assert.equal(session.messages[1].state, 'streaming');
+    assert.equal(session.messages[1].trace.state, 'running');
+    assert.equal(session.eventCursor, 42);
+    duplex.disconnect();
+  } finally { globalThis.EventSource = previous; }
+});
+
+test('task timeline retains chronological order when callbacks restart on resume', async () => {
+  const { Duplex } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const duplex = new Duplex(() => {}, applyTraceEvent);
+  const answer = { taskId: 'A', replyTo: 'task:A' };
+  for (const span of [
+    { id: 'first-model', sequence: 1, started_at: '2030-01-01T00:00:00Z' },
+    { id: 'tool', sequence: 2, started_at: '2030-01-01T00:00:01Z' },
+    { id: 'resumed-model', sequence: 1, started_at: '2030-01-01T00:05:00Z' },
+  ]) duplex.trace(answer, { type: 'trace', span });
+  assert.deepEqual(answer.trace.spans.map(s => s.id), ['first-model', 'tool', 'resumed-model']);
+  assert.deepEqual(answer.trace.spans.map(s => s.sequence), [1, 2, 3]);
+});
+
+test('duplex and the application share the same timeline clock module', async () => {
+  const { Duplex } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const { elapsed } = await import('../src/personal_assistant_agent/static/js/timeline.js?v=2');
+  const answer = { replyTo: 'chat-A' };
+  const duplex = new Duplex(() => {}, applyTraceEvent);
+  duplex.trace(answer, { type: 'meta', timeline_version: 1 });
+  assert.equal(answer.trace.state, 'running');
+  assert.ok(Number.isFinite(elapsed(answer.trace)));
+});
+
+test('task completion appears after intervening steering messages, once', async () => {
+  const { reduceEvent } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const placeholder = { id: 'task-answer', replyTo: 'task:A', role: 'assistant', state: 'streaming', text: '' };
+  const session = { messages: [placeholder, { role: 'user', text: '只看科技' }, { role: 'assistant', text: '已收到' }] };
+  const event = { sequence: 1, type: 'task.result', task_id: 'A', payload: { result: '最新国内科技新闻', status: 'SUCCEEDED' } };
+  assert.equal(reduceEvent(session, event), true);
+  assert.equal(session.messages.at(-1), placeholder);
+  assert.equal(placeholder.taskResult, true);
+  assert.equal(reduceEvent(session, event), false);
+  assert.equal(session.messages.filter(m => m.replyTo === 'task:A').length, 1);
+});
+
+test('an empty browser restores durable message and result order from the server', async t => {
+  const { Duplex } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { id: 'conversation', messages: [] };
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({
+    tasks: [{ id: 'A', status: 'SUCCEEDED', result: '国内新闻' }], cursor: 42,
+    messages: [
+      { id: 'new', role: 'user', kind: 'NEW_TASK', content: '搜索全球新闻' },
+      { id: 'steer', role: 'user', kind: 'STEER', content: '只看国内' },
+      { id: 'result:A', role: 'assistant', kind: 'RESULT', content: '国内新闻' },
+      { id: 'chat', role: 'user', kind: 'CHAT', content: '谢谢', response: '{"pending":false}' },
+      { id: 'chat:chat', role: 'assistant', kind: 'CHAT', content: '不用谢' },
+    ],
+  })));
+  const previous = globalThis.EventSource;
+  globalThis.EventSource = class { close() {} };
+  try {
+    const duplex = new Duplex(() => {}, () => {});
+    await duplex.connect(session);
+    assert.deepEqual(session.messages.map(m => m.text), ['搜索全球新闻', '只看国内', '国内新闻', '谢谢', '不用谢']);
+    await duplex.connect(session);
+    assert.equal(session.messages.filter(m => m.replyTo === 'task:A').length, 1);
+    assert.equal(session.messages.at(-1).text, '不用谢');
+    duplex.disconnect();
+  } finally { globalThis.EventSource = previous; }
+});

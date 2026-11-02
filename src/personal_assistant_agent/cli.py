@@ -20,4 +20,7 @@ def main() -> None:
         port=args.port,
         reload=args.reload,
         log_level="info",
+        # SSE subscriptions otherwise prevent lifespan shutdown indefinitely.
+        # This bounds HTTP draining; Runtime.close still waits for safe tool boundaries.
+        timeout_graceful_shutdown=5,
     )

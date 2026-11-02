@@ -3,6 +3,51 @@
 import re
 
 
+def requests_sensitive_disclosure(text: str) -> bool:
+    """Recognize direct secret retrieval, not security explanations or negated reads.
+
+    WorkspaceBackend remains the authority for every actual path operation.
+    This narrow front guard prevents an affirmative answer from authorizing an
+    explicit server-credential request before the model can launch tools.
+    """
+    if re.search(r"(?:仅|只)(?:识别|分析|解释|审查)|如何保护|怎样保护|如何防止", text):
+        return False
+    for clause in re.split(r"[，。；;\n]", text):
+        if not re.search(
+            r"\.env\b|id_rsa\b|id_ed25519\b|credentials?\b|api[ _-]?key"
+            r"|(?:API|服务端|服务器).{0,12}(?:密钥|密码|令牌)",
+            clause,
+            re.I,
+        ):
+            continue
+        for verb in re.finditer(
+            r"读取|读出|查看|打印|输出|泄露|告诉我|发给我|获取|\bread\b|\bprint\b|\breveal\b",
+            clause,
+            re.I,
+        ):
+            if not re.search(
+                r"(?:不要|禁止|无需|别|不允许|do not|don't)\s*$",
+                clause[max(0, verb.start() - 12) : verb.start()],
+                re.I,
+            ):
+                return True
+    return False
+
+
+def name_only_answer(request: str, answer: str) -> str | None:
+    """Strip a self-introduction wrapper only when the user requested a name alone."""
+    if not re.search(r"(?:只|仅)(?:回答|回复|输出)", request) or not re.search(
+        r"你(?:的)?(?:正式)?名|你叫什么", request
+    ):
+        return None
+    match = re.fullmatch(
+        r"我(?:的)?(?:正式)?(?:名字|名称)?(?:是|叫|为)\s*[“\"「]?"
+        r"([^，。！？\n“”\"「」]{1,40})[”\"」]?[。.!！]?",
+        answer.strip(),
+    )
+    return match[1].strip() if match else None
+
+
 def requests_arithmetic(request: str) -> bool:
     """Identify explicit numeric arithmetic questions, without matching calendar dates."""
     expression_text = re.sub(r"(?<!\d)\d{4}[-/]\d{1,2}[-/]\d{1,2}(?!\d)", "", request)
@@ -127,3 +172,18 @@ def initial_steps(text: str) -> list[str]:
             return []
         steps.append(clause[:500])
     return steps[:32]
+
+
+def requests_budget_verification(text: str) -> bool:
+    """Require a real verification when the user explicitly requests it."""
+    from personal_assistant_agent.services.scheduling import serial_contract
+
+    if serial_contract(text) and re.search(r"核验|校验|验证", text):
+        return True
+    return bool(
+        re.search(
+            r"(?:用|使用|调用).{0,8}validate_time_budget"
+            r"|(?:核验|校验|验证).{0,6}(?:时长|时间预算)|调用时长核验工具",
+            text,
+        )
+    )

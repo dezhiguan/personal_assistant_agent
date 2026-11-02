@@ -24,7 +24,7 @@ from langchain.agents.middleware import (
     dynamic_prompt,
 )
 from langchain.agents.middleware.todo import Todo
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
@@ -45,6 +45,19 @@ class AssistantState(DeepAgentState):
     todos: NotRequired[list[Todo]]
     plan_checks: NotRequired[int]
     delivery_checks: NotRequired[int]
+
+
+@before_model(state_schema=AssistantState, can_jump_to=["end"])
+def reject_secret_disclosure(state, runtime):
+    from personal_assistant_agent.services.delivery import requests_sensitive_disclosure
+
+    user = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
+    if requests_sensitive_disclosure(str(user.content)):
+        return {
+            "messages": [AIMessage(content="不能读取或披露服务端密钥、密码及私有凭据。")],
+            "jump_to": "end",
+        }
+    return None
 
 
 @before_model(state_schema=AssistantState)
@@ -72,7 +85,9 @@ def check_delivery(state, runtime):
     from personal_assistant_agent.services.delivery import (
         delivery_monologue,
         length_limit,
+        name_only_answer,
         requests_arithmetic,
+        requests_budget_verification,
         requests_file_read,
         requests_listing_tool,
         unsupported_report_progress,
@@ -123,6 +138,8 @@ def check_delivery(state, runtime):
         return {"messages": [final]} if amended else None
     turn_start = max(i for i, message in enumerate(messages) if isinstance(message, HumanMessage))
     required_tools = set()
+    if requests_budget_verification(str(user.content)):
+        required_tools.add("validate_time_budget")
     if requests_arithmetic(str(user.content)):
         required_tools.add("calculate")
     if requests_file_read(str(user.content)):
@@ -133,9 +150,61 @@ def check_delivery(state, runtime):
         message.name for message in messages[turn_start:] if isinstance(message, ToolMessage)
     }
     missing_tools = required_tools - observed_tools
+    from personal_assistant_agent.services.scheduling import serial_contract
+
+    contract = serial_contract(str(user.content))
+    if contract and "validate_time_budget" in required_tools:
+        tasks, capacity = contract
+        completed = set()
+        for message in messages[turn_start:]:
+            if not isinstance(message, ToolMessage) or message.name != "validate_time_budget":
+                continue
+            try:
+                receipt = json.loads(str(message.content))
+            except ValueError:
+                continue
+            if (
+                isinstance(receipt, dict)
+                and "total" in receipt
+                and "error" not in receipt
+                and message.status != "error"
+            ):
+                completed.add(message.tool_call_id)
+        verified = False
+        for message in messages[turn_start:]:
+            for call in getattr(message, "tool_calls", []):
+                if call["name"] != "validate_time_budget" or call["id"] not in completed:
+                    continue
+                durations = call["args"].get("durations", [])
+                available = call["args"].get("available", 0)
+                if (
+                    not isinstance(durations, list)
+                    or type(available) not in {float, int}
+                    or not math.isfinite(available)
+                    or available <= 0
+                ):
+                    continue
+                scale = available / capacity
+                if not math.isfinite(scale) or scale <= 0:
+                    continue
+                verified |= len(durations) == len(tasks) and all(
+                    type(value) in {float, int}
+                    and math.isfinite(value)
+                    and math.isclose(value / scale, hours, rel_tol=0, abs_tol=1e-8)
+                    for value, (_, hours) in zip(durations, tasks)
+                )
+        if not verified:
+            missing_tools.add("validate_time_budget")
     if missing_tools:
         if state.get("delivery_checks", 0) >= 3:
             raise ValueError("Requested tool verification missing")
+        budget_hint = (
+            " 本轮固定原始工时（小时）="
+            + json.dumps([hours for _, hours in contract[0]])
+            + f"，每日容量（小时）={contract[1]}。"
+            if contract and "validate_time_budget" in missing_tools
+            else ""
+        )
         return {
             "delivery_checks": state.get("delivery_checks", 0) + 1,
             "messages": [
@@ -147,6 +216,9 @@ def check_delivery(state, runtime):
                         "算式须经calculate核验；明确要求读取文件时须使用read_file尝试读取，"
                         "不能用心算或目录列表代替。文件不存在时如实停止，不创建替代数据。"
                         "用户点名ls时须直接调用ls工具，execute运行同名命令不能替代。"
+                        "单人固定串行任务必须逐项核验用户原始工时及每日容量，不能漏项、减工时"
+                        "或用另一套更短的议程冒充；允许将所有工时和容量按同一比例换算单位。"
+                        + budget_hint
                     )
                 )
             ],
@@ -192,6 +264,9 @@ def check_delivery(state, runtime):
     verified = verified_serial_answer(str(user.content))
     if verified:
         final.content = verified
+    name = name_only_answer(str(user.content), str(final.content))
+    if name:
+        final.content = name
     json_only = bool(
         re.search(
             r"(?:只|仅)(?:输出|返回)\s*(?:一个\s*)?"
@@ -219,6 +294,18 @@ def check_delivery(state, runtime):
                     )
                 ):
                     raise ValueError("Requested numeric array is invalid")
+                segments = parsed.get("segments")
+                if (
+                    isinstance(segments, list)
+                    and segments
+                    and all(
+                        isinstance(segment, dict) and type(segment.get("minutes")) in {int, float}
+                        for segment in segments
+                    )
+                ):
+                    listed = [segment["minutes"] for segment in segments]
+                    if listed != durations:
+                        raise ValueError("Named segments contradict durations")
                 total = math.fsum(durations)
                 # Validation totals share the durations' unit. Budget targets
                 # may intentionally differ, and total_hours/total_minutes may
@@ -247,6 +334,7 @@ def check_delivery(state, runtime):
                             "若要求durations为数组，必须使用非负有限数值数组，不能用对象数组。"
                             "durations真实总和须与声明的总时长和核验结果一致；若不一致，"
                             "调整各段并重新调用validate_time_budget，不能编造核验值。"
+                            "segments中的minutes必须逐项对应durations，不能列了七段却只汇总六段。"
                         )
                     )
                 ],
@@ -398,16 +486,35 @@ def planning_context(request: ModelRequest) -> SystemMessage:
 
 
 def build_agent(
-    settings: Settings, *, tools: list[BaseTool] | None = None, prompt: PromptVersion | None = None
+    settings: Settings,
+    *,
+    tools: list[BaseTool] | None = None,
+    prompt: PromptVersion | None = None,
+    checkpointer=None,
+    control=None,
+    read_only=False,
 ) -> CompiledStateGraph:
     # Harness registration is additive and process-global. Keep registration and
     # graph construction together so concurrent fixtures cannot borrow a backend.
     with _BUILD_LOCK:
-        return _build_agent(settings, tools=tools, prompt=prompt)
+        return _build_agent(
+            settings,
+            tools=tools,
+            prompt=prompt,
+            checkpointer=checkpointer,
+            control=control,
+            read_only=read_only,
+        )
 
 
 def _build_agent(
-    settings: Settings, *, tools: list[BaseTool] | None = None, prompt: PromptVersion | None = None
+    settings: Settings,
+    *,
+    tools: list[BaseTool] | None = None,
+    prompt: PromptVersion | None = None,
+    checkpointer=None,
+    control=None,
+    read_only=False,
 ) -> CompiledStateGraph:
     if not 1 <= settings.max_model_calls <= 512 or not 1 <= settings.max_tool_calls <= 1024:
         raise ValueError("模型调用限额须为1–512，工具调用限额须为1–1024。")
@@ -460,11 +567,23 @@ def _build_agent(
             system_prompt = system_prompt.replace(inactive, "")
     # Deep Agents resolves profiles using the model's tracing provider, which
     # may be a Qwen pricing alias rather than "openai".
+    profile_build = 0
+
+    def profile_middleware():
+        # Deep Agents 0.7.32 materializes the GP stack first, then the root stack.
+        # Install branch controls only on GP; root controls are explicit below.
+        nonlocal profile_build
+        profile_build += 1
+        return [
+            *([control.branch()] if control and profile_build == 1 else []),
+            ContextWindowMiddleware(model, backend, settings),
+        ]
+
     register_harness_profile(
         f"{model._get_ls_params()['ls_provider']}:{settings.model_name}",
         HarnessProfile(
             excluded_middleware=frozenset({SummarizationMiddleware}),
-            extra_middleware=lambda: [ContextWindowMiddleware(model, backend, settings)],
+            extra_middleware=profile_middleware,
             general_purpose_subagent=GeneralPurposeSubagentProfile(
                 enabled=True,
                 system_prompt=system_prompt
@@ -476,12 +595,17 @@ def _build_agent(
             tool_description_overrides={"execute": EXECUTE_DESCRIPTION},
         ),
     )
-    return create_deep_agent(
+    from personal_assistant_agent.interaction.middleware import ChatReadOnlyMiddleware
+
+    agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
         tools=agent_tools,
         backend=backend,
         middleware=[
+            *([control] if control else []),
+            *([ChatReadOnlyMiddleware()] if read_only else []),
+            reject_secret_disclosure,
             ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=settings.max_tool_calls, exit_behavior="error"),
             planning_context,
@@ -491,5 +615,11 @@ def _build_agent(
             check_delivery,
         ],
         state_schema=AssistantState,
+        checkpointer=checkpointer,
         name="personal-assistant",
     )
+    if control and profile_build != 2:
+        raise RuntimeError(
+            "Harness profile construction changed; verify task control installation."
+        )
+    return agent

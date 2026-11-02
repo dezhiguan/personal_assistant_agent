@@ -1,3 +1,4 @@
+import { Duplex, requestJSON, taskLabels } from './duplex.js';
 import { getStatus, streamChat } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { latestTodos, normalizeTodos, renderPlan } from './planning.js';
@@ -11,6 +12,10 @@ let job = null;
 let toastTimer;
 let tracingEnabled = false;
 const timeline = new TimelinePanel();
+const duplex = new Duplex(error => {
+  if (error) toast(error);
+  persist(); renderMessages(); renderTasks();
+}, applyTraceEvent);
 
 function showTimeline() {
   $('app').classList.remove('trace-collapsed');
@@ -101,8 +106,8 @@ function renderHistory() {
     label.textContent = session.title;
     button.append(icon('chat'), label);
     button.addEventListener('click', () => {
-      stopGeneration();
       currentId = session.id;
+      duplex.connect(session);
       $('message-input').value = '';
       resizeInput();
       closeMenu();
@@ -208,6 +213,28 @@ function renderAssistant(row, message, session) {
     }
     row.append(error);
   }
+  if (message.state === 'streaming' && typeof message.replyTo === 'string' && !message.replyTo.startsWith('task:')) {
+    const stop = document.createElement('button');
+    stop.className = 'copy'; stop.textContent = '停止本条回复';
+    stop.addEventListener('click', async () => {
+      try { await requestJSON(`/api/conversations/${session.id}/chats/${message.replyTo}/stop`, {}); }
+      catch (error) { toast(error.message); }
+    });
+    row.append(stop);
+  }
+  if (message.candidates?.length) {
+    for (const id of message.candidates) {
+      const pick = document.createElement('button');
+      pick.textContent = (session.tasks?.[id]?.goal || '任务') + ' · ' + id.slice(0, 8);
+      pick.addEventListener('click', () => {
+        $('message-mode').value = id;
+        const user = session.messages.find(m => m.id === message.replyTo);
+        if (user) { $('message-input').value = user.text; updateSend(); }
+        $('message-input').focus();
+      });
+      row.append(pick);
+    }
+  }
   renderMessageTiming(row, message);
   const hasTrace = (message.tracingEnabled ?? tracingEnabled) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(message.requestId || '');
   if ((message.text || hasTrace || message.trace) && message.state !== 'streaming') {
@@ -281,22 +308,74 @@ function resizeInput() {
 
 function updateSend() {
   const button = $('send');
-  button.disabled = !job && !$('message-input').value.trim();
-  button.classList.toggle('running', !!job);
-  button.setAttribute('aria-label', job ? '停止生成' : '发送消息');
-  button.title = job ? '停止生成' : '发送消息';
-  button.replaceChildren();
-  if (job) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('viewBox', '0 0 12 12');
-    const rect = document.createElementNS(svg.namespaceURI, 'rect');
-    rect.setAttribute('width', '12');
-    rect.setAttribute('height', '12');
-    rect.setAttribute('rx', '2');
-    svg.append(rect);
-    button.append(svg);
-  } else button.append(icon('send'));
-  $('input-note').textContent = job ? '正在生成回复 · 点击右侧可停止' : 'Enter 发送 · Shift + Enter 换行';
+  button.disabled = !$('message-input').value.trim();
+  button.classList.remove('running');
+  button.setAttribute('aria-label', '发送消息');
+  button.title = '发送消息';
+  button.replaceChildren(icon('send'));
+  $('input-note').textContent = '任务执行期间可继续聊天或补充要求 · Enter 发送';
+}
+
+function renderTasks() {
+  const session = activeSession();
+  const panel = $('duplex-tasks');
+  const select = $('message-mode');
+  const selected = select.value;
+  select.replaceChildren();
+  for (const [value, label] of [['', '自动关联'], ['CHAT', '独立聊天'], ['NEW_TASK', '新任务']]) {
+    select.add(new Option(label, value));
+  }
+  panel.replaceChildren();
+  for (const task of Object.values(session?.tasks || {})) {
+    select.add(new Option('关联：' + task.goal.slice(0, 14) + ' · ' + task.id.slice(0, 8), task.id));
+    const card = document.createElement('article');
+    card.className = 'duplex-task';
+    card.dataset.taskId = task.id;
+    const title = document.createElement('strong');
+    title.textContent = task.goal + ' · ' + task.id.slice(0, 8);
+    const status = document.createElement('span');
+    status.className = 'duplex-status';
+    status.textContent = taskLabels[task.status] || task.status;
+    const goal = document.createElement('p');
+    goal.textContent = task.effective_task_request;
+    const progress = document.createElement('small');
+    const todos = task.progress?.todos || [];
+    const toolNames = Object.values(task.progress?.active_tools || {}).map(t => t.name).join('、') || task.currentTool || '';
+    const closed = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(task.status);
+    progress.textContent = (toolNames ? `${task.status === 'RECOVERY_REQUIRED' ? '待核对操作' : '正在调用'} ${toolNames} · ` : '')
+      + (todos.length ? `已完成 ${todos.filter(t => t.status === 'completed').length} 项 · ` : '')
+      + (closed ? (task.status === 'SUCCEEDED' && task.revision > 0 ? '最新要求已应用' : '')
+        : task.controlNote || (task.applied_revision < task.revision ? '新要求等待应用' : ''));
+    card.append(title, status, goal, progress);
+    if (task.source_task_id) {
+      const reference = document.createElement('small');
+      reference.textContent = '修订任务 · 原成果 ' + task.source_task_id.slice(0, 8);
+      card.append(reference);
+    }
+    for (const [type, label] of (task.desired_action === 'CANCEL' ? [] : task.status === 'PAUSED' ? [['RESUME', '恢复'], ['CANCEL', '取消']]
+      : ['QUEUED', 'RUNNING', 'PAUSING'].includes(task.status) ? [['PAUSE', '暂停'], ['CANCEL', '取消']]
+      : ['RECOVERY_REQUIRED', 'WAITING_INPUT'].includes(task.status) ? [['CANCEL', '取消']] : [])) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.textContent = label;
+      button.setAttribute('aria-label', `${label}任务：${task.goal}`);
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          await requestJSON(`/api/tasks/${task.id}/controls`, { conversation_id: session.id,
+            control_id: crypto.randomUUID(), type, expected_revision: task.revision });
+          toast('指令已收到，等待任务状态确认');
+        } catch (error) { toast(error.message); button.disabled = false; }
+      });
+      card.append(button);
+    }
+    if (task.reason || task.error) {
+      const reason = document.createElement('p'); reason.textContent = task.reason || task.error.message;
+      card.append(reason);
+    }
+    panel.append(card);
+  }
+  if ([...select.options].some(o => o.value === selected)) select.value = selected;
+  panel.hidden = !panel.children.length;
 }
 
 function finish(running) {
@@ -323,6 +402,14 @@ function stopGeneration() {
 }
 
 async function runConversation(session, message) {
+  if (message.replyTo) {
+    const user = session.messages.find(m => m.id === message.replyTo);
+    if (user) {
+      message.state = 'streaming'; message.text = ''; delete message.error;
+      duplex.send(session, user, message, message.sendMode || '');
+    }
+    return;
+  }
   const todos = latestTodos(session.messages, message);
   message.todos = todos;
   const question = session.messages.slice(0, session.messages.indexOf(message)).findLast(m => m.role === 'user')?.text || '';
@@ -410,7 +497,6 @@ function retryMessage(session, message) {
 }
 
 function submitMessage() {
-  if (job) { stopGeneration(); return; }
   const text = $('message-input').value.trim();
   if (!text) return;
   let session = activeSession();
@@ -425,16 +511,22 @@ function submitMessage() {
   $('message-input').value = '';
   resizeInput();
   renderHistory();
-  runConversation(session, answer);
+  const user = session.messages.at(-2);
+  renderMessages(); persist(); updateSend();
+  if (!duplex.source) duplex.connect(session);
+  answer.sendMode = $('message-mode').value;
+  $('message-mode').value = '';
+  duplex.send(session, user, answer, answer.sendMode);
 }
 
 function newChat() {
-  stopGeneration();
+  duplex.disconnect();
   currentId = null;
   $('message-input').value = '';
   resizeInput();
   closeMenu();
   renderMessages();
+  renderTasks();
   renderHistory();
   updateSend();
   persist();
@@ -460,7 +552,7 @@ $('message-input').addEventListener('input', () => { resizeInput(); updateSend()
 $('message-input').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
-    if (!job) submitMessage();
+    submitMessage();
   }
 });
 document.querySelectorAll('[data-prompt]').forEach(button => button.addEventListener('click', () => {
@@ -492,9 +584,11 @@ $('clear-history').addEventListener('click', () => {
   newChat();
   toast('本机对话记录已清空');
 });
-window.addEventListener('pagehide', () => { stopGeneration(); persist(); });
+window.addEventListener('pagehide', () => { duplex.disconnect(); persist(); });
 loadHistory();
 renderHistory();
 renderMessages();
 updateSend();
 refreshStatus();
+if (activeSession()) duplex.connect(activeSession());
+renderTasks();

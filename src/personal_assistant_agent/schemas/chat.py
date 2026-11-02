@@ -53,3 +53,18 @@ class ChatRequest(BaseModel):
         if sum(len(m.content) for m in self.messages) > 80000:
             raise ValueError("对话过长，请开启新对话")
         return self
+
+
+class StoredChatMessage(BaseModel):
+    """Internal projection of durable rows, never accepted by an HTTP endpoint."""
+
+    role: Literal["user", "assistant"]
+    content: str
+
+
+class StoredChatRequest(BaseModel):
+    """The Harness compresses stored history; public ChatRequest bounds stay unchanged."""
+
+    conversation_id: UUID
+    messages: list[StoredChatMessage]
+    todos: list[TodoItem] = Field(default_factory=list)
