@@ -8,8 +8,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from personal_assistant_agent.interaction.routing import (
+    canonical_conditions,
     canonical_news_constraints,
     normalize_news_task,
+    plain_writing_request,
+    writing_conditions,
+    writing_task,
 )
 
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED"}
@@ -181,6 +185,16 @@ class TaskStore:
         )
         return [dict(r) for r in rows]
 
+    def conversations(self):
+        # Durable discovery is needed when a stale tab overwrites its local
+        # manifest. Bodies are hydrated only when that conversation is opened.
+        rows = self.db.execute(
+            "SELECT m.conversation,m.content,m.seq FROM messages m JOIN "
+            "(SELECT conversation,min(seq) AS first_seq FROM messages WHERE role='user' "
+            "GROUP BY conversation) c ON m.seq=c.first_seq ORDER BY m.seq DESC"
+        )
+        return [{"id": r["conversation"], "title": r["content"][:24]} for r in rows]
+
     def duplicate(self, message_id, request):
         row = self.db.execute(
             "SELECT request,response FROM messages WHERE id=?", (message_id,)
@@ -215,8 +229,26 @@ class TaskStore:
                     }
                     response.update(intent=kind, revision_of=task_id)
             if kind == "NEW_TASK":
+                if not decision.get("source_task_id") and (plain := plain_writing_request(content)):
+                    decision = {
+                        **decision,
+                        "goal": plain["goal"],
+                        "constraints": {**decision.get("constraints", {}), **plain["constraints"]},
+                    }
                 if source_id := decision.get("source_task_id"):
                     source = self.task(source_id, conversation)
+                    if source["status"] not in TERMINAL and source["status"] != "RECOVERY_REQUIRED":
+                        raise Conflict("原任务仍在执行，请到安全终态后再创建关联修订。")
+                    from personal_assistant_agent.interaction.middleware import READ_ONLY
+
+                    if any(
+                        r[0] not in READ_ONLY
+                        for r in self.db.execute(
+                            "SELECT name FROM operations WHERE task=? AND status='STARTED'",
+                            (source_id,),
+                        )
+                    ):
+                        raise Conflict("原任务有结果未知的写操作，须先核对，不能自动复制并重做。")
                     decision = {
                         **decision,
                         "constraints": {
@@ -225,6 +257,11 @@ class TaskStore:
                         },
                     }
                     response["revision_of"] = source_id
+                decision["constraints"] = canonical_conditions(decision.get("constraints", {}))
+                if writing_task(
+                    {"goal": decision.get("goal", ""), "constraints": decision["constraints"]}
+                ) or any(word in content for word in ("作文", "文章", "写作", "故事", "散文")):
+                    decision["constraints"].update(writing_conditions(content))
                 if "新闻" in (decision.get("goal") or ""):
                     decision["goal"], decision["constraints"] = normalize_news_task(
                         decision["goal"], decision.get("constraints", {})
@@ -355,15 +392,20 @@ class TaskStore:
         safe_recovery = (
             task["status"] == "RECOVERY_REQUIRED" and task.get("recoverable") and kind == "RESUME"
         )
+        safe_edit = (
+            task["status"] == "RECOVERY_REQUIRED" and task.get("recoverable") and kind == "STEER"
+        )
         if (
             task["status"] in {"RECOVERY_REQUIRED", "WAITING_INPUT"}
             and kind != "CANCEL"
             and not safe_recovery
+            and not safe_edit
         ):
             raise Conflict("任务需要核对或匹配的业务输入，不能通过普通控制恢复。")
         if kind == "RESUME" and task["status"] not in {"PAUSED", "PAUSING"} and not safe_recovery:
             raise Conflict("仅可恢复已暂停或正在暂停的任务；未知操作须先核对。")
         if kind == "STEER":
+            changes = canonical_conditions(changes)
             pending = self.db.execute(
                 "SELECT count(*) FROM controls WHERE task=? AND kind='STEER' AND applied=0",
                 (task_id,),
@@ -404,9 +446,13 @@ class TaskStore:
             else:
                 task["status"] = "CANCELLING" if task["status"] in ACTIVE else "CANCELLED"
         elif kind == "RESUME":
+            if safe_recovery and task.get("error", {}).get("code") == "MODEL_CONTEXT_LIMIT":
+                task["context_recovery_attempts"] = task.get("context_recovery_attempts", 0) + 1
             task["desired_action"] = "RUN"
             if task["status"] == "PAUSED" or safe_recovery:
                 task["status"] = "QUEUED"
+                task.pop("reason", None)
+                task.pop("error", None)
         else:
             raise Conflict("未知控制类型。")
         task["revision"] += 1
@@ -448,8 +494,25 @@ class TaskStore:
     def applied(self, task_id, revision, checkpoint, effective_request=None):
         with self.transaction():
             task = self.task(task_id)
+            changed = revision > task["applied_revision"] or (
+                effective_request is not None
+                and effective_request != task.get("applied_effective_task_request")
+            )
+            if revision >= task["applied_revision"] and effective_request is not None:
+                task["applied_effective_task_request"] = effective_request
             task["applied_revision"] = max(task["applied_revision"], revision)
             self.save(task)
+            if changed:
+                self.event(
+                    task["conversation_id"],
+                    "task.directive_applied",
+                    {
+                        "directive_revision": task["applied_revision"],
+                        "effective_task_request": task.get("applied_effective_task_request"),
+                        "checkpoint_id": checkpoint,
+                    },
+                    task_id,
+                )
             for control in self.controls(task_id):
                 if (
                     not control["applied"]

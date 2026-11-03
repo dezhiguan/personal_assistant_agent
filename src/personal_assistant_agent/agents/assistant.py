@@ -24,7 +24,13 @@ from langchain.agents.middleware import (
     dynamic_prompt,
 )
 from langchain.agents.middleware.todo import Todo
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    RemoveMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.tools import BaseTool
 from langgraph.graph.state import CompiledStateGraph
 
@@ -45,6 +51,7 @@ class AssistantState(DeepAgentState):
     todos: NotRequired[list[Todo]]
     plan_checks: NotRequired[int]
     delivery_checks: NotRequired[int]
+    delivery_drafts: NotRequired[dict[str, str]]
 
 
 @before_model(state_schema=AssistantState, can_jump_to=["end"])
@@ -143,6 +150,8 @@ def check_delivery(state, runtime):
 
     messages = state["messages"]
     final = messages[-1]
+    if final.additional_kwargs.get("stale_task_candidate"):
+        return None
     user = next(m for m in reversed(messages) if isinstance(m, HumanMessage))
     calls = getattr(final, "tool_calls", [])
     # Completed deliverables are immutable records. Rework is a new task that
@@ -394,7 +403,46 @@ def check_delivery(state, runtime):
                 ],
                 "jump_to": "model",
             }
-    limit = length_limit(str(user.content))
+    # A requested essay length is a target; explicit "以内/不超过" remains a cap.
+    # Keep the existing strict counting contract for other answers and JSON.
+    from personal_assistant_agent.services.delivery import writing_delivery_issue
+
+    writing_issue = writing_delivery_issue(str(user.content), str(final.content))
+    if writing_issue:
+        if state.get("delivery_checks", 0) >= 3:
+            raise ValueError("Writing delivery validation failed")
+        return {
+            "delivery_checks": state.get("delivery_checks", 0) + 1,
+            "delivery_drafts": {
+                **state.get("delivery_drafts", {}),
+                str(final.id): str(final.content),
+            },
+            "messages": [
+                *[
+                    RemoveMessage(id=m.id)
+                    for m in messages[:-1]
+                    if m.type == "ai" and m.additional_kwargs.get("writing_rejected_draft")
+                ],
+                final.model_copy(
+                    update={
+                        "additional_kwargs": {
+                            **final.additional_kwargs,
+                            "writing_rejected_draft": True,
+                        }
+                    }
+                ),
+                SystemMessage(
+                    id="writing-delivery-validation",
+                    content="写作交付校验："
+                    + writing_issue
+                    + "。请以紧邻的上一份草稿为素材，按最新用户要求压缩或补足，"
+                    "重新交付完整成稿，必须有结尾；"
+                    "复用已有素材，不重复写文件或更新已完成计划。",
+                ),
+            ],
+            "jump_to": "model",
+        }
+    limit = None if writing_issue is not None else length_limit(str(user.content))
     if (
         limit
         and (len(str(final.content)) if json_only else visible_length(str(final.content))) > limit
@@ -425,6 +473,8 @@ def check_plan_commit(state, runtime):
     """
     messages = state["messages"]
     final = messages[-1]
+    if final.additional_kwargs.get("stale_task_candidate"):
+        return None
     todos = state.get("todos", [])
     if getattr(final, "tool_calls", None) or not todos:
         return None
@@ -432,8 +482,15 @@ def check_plan_commit(state, runtime):
         (i for i in range(len(messages) - 1, -1, -1) if isinstance(messages[i], HumanMessage)),
         0,
     )
+    plan_calls = {
+        c["id"]
+        for m in messages[start:]
+        for c in getattr(m, "tool_calls", [])
+        if c["name"] == "write_todos"
+    }
     committed = any(
-        isinstance(m, ToolMessage) and m.name == "write_todos" for m in messages[start:]
+        isinstance(m, ToolMessage) and (m.name == "write_todos" or m.tool_call_id in plan_calls)
+        for m in messages[start:]
     )
     user_text = str(messages[start].content)
     if standalone_question(user_text):
@@ -523,6 +580,8 @@ def planning_context(request: ModelRequest) -> SystemMessage:
                     "- 中间步骤只简短报告进度，完整内容留到最后统一交付，避免重复输出。\n"
                     "- 输出最终结果之前，必须先调用 write_todos，提交与本轮实际成果一致的"
                     "完整列表。尤其不能遗漏最后一项的 completed 更新。\n"
+                    "- 若本轮工具已经实际提交了与成果一致的完整列表，直接交付正文，"
+                    "不要再次提交相同的完成计划。\n"
                     "- 只有已经完成的工作才能标记 completed；等待用户补充信息或尚未完成的"
                     "工作保留未完成状态，并明确提问或说明阻碍。\n"
                     "- 用户要求在原计划追加步骤时，保留所有原有步骤的内容和状态，"

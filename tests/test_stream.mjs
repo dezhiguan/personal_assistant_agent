@@ -2,7 +2,20 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseEvents, streamChat } from '../src/personal_assistant_agent/static/js/api.js';
 import { latestTodos, normalizeTodos } from '../src/personal_assistant_agent/static/js/planning.js';
+import { mergeSessions, discoverSessions } from '../src/personal_assistant_agent/static/js/history.js';
 import { applyTraceEvent, beginTrace, costLabel, duration, endTrace, summarize } from '../src/personal_assistant_agent/static/js/timeline.js';
+
+test('stale tabs preserve other conversations and durable discovery restores missing entries', () => {
+  const live = { id: 'a', title: 'old', messages: [] };
+  const modern = { id: 'b', title: 'new', messages: [] };
+  const merged = mergeSessions([live], [live, modern]);
+  assert.deepEqual(merged, [live, modern]);
+  assert.equal(merged[0], live);
+  assert.deepEqual(discoverSessions([live], [{ id: 'c', title: 'recovered' }, { id: 'a', title: 'old' }]),
+    [{ id: 'c', title: 'recovered', messages: [] }, live]);
+  assert.deepEqual(mergeSessions([live], [live, modern], ['b']), [live]);
+  assert.deepEqual(discoverSessions([], [{ id: 'b', title: 'cleared' }], ['b']), []);
+});
 
 test('NDJSON parser handles Chinese split across byte boundaries and incomplete lines', async () => {
   const bytes = new TextEncoder().encode('{"type":"delta","text":"你好"}\n{"type":"done"}');
@@ -192,6 +205,31 @@ test('reconnecting restores active task and chat states without cancelling eithe
   } finally { globalThis.EventSource = previous; }
 });
 
+test('durable receipts restore beside their questions before the final result, once', async t => {
+  const { Duplex } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { id: 'conversation', messages: [
+    { id: 'u', role: 'user', text: '写作文' },
+    { id: 's', role: 'user', text: '改成中文' },
+    { id: 'result', role: 'assistant', replyTo: 'task:A', text: '成稿', taskResult: true },
+  ] };
+  const snapshot = { tasks: [{ id: 'A', status: 'SUCCEEDED', result: '成稿' }], cursor: 10, messages: [
+    { id: 'u', role: 'user', kind: 'NEW_TASK', content: '写作文', response: JSON.stringify({ intent: 'NEW_TASK', task_id: 'A' }) },
+    { id: 's', role: 'user', kind: 'STEER', content: '改成中文', response: JSON.stringify({ intent: 'STEER', effective_task_request: '语言=中文' }) },
+    { id: 'result:A', role: 'assistant', kind: 'RESULT', content: '成稿' },
+  ] };
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify(snapshot)));
+  const previous = globalThis.EventSource;
+  globalThis.EventSource = class { close() {} };
+  try {
+    const duplex = new Duplex(() => {}, () => {});
+    await duplex.connect(session); await duplex.connect(session);
+    assert.deepEqual(session.messages.map(m => m.id), ['u', 'answer:u', 's', 'answer:s', 'result']);
+    assert.match(session.messages[1].text, /任务已接收/);
+    assert.match(session.messages[3].text, /语言=中文/);
+    duplex.disconnect();
+  } finally { globalThis.EventSource = previous; }
+});
+
 test('task timeline retains chronological order when callbacks restart on resume', async () => {
   const { Duplex } = await import('../src/personal_assistant_agent/static/js/duplex.js');
   const duplex = new Duplex(() => {}, applyTraceEvent);
@@ -260,6 +298,17 @@ test('task status describes actual tools and steps, without invented percentages
       active_tools: { search: { name: 'baidu_search' } } } });
   assert.match(text, /暂停中/); assert.match(text, /核验来源/); assert.match(text, /已完成 1 项/);
   assert.match(text, /baidu_search/); assert.match(text, /等待安全边界/); assert.ok(!text.includes('%'));
+});
+
+test('initial directive application clears waiting status before any steering control exists', async () => {
+  const { reduceEvent, describeTask } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { messages: [], tasks: { a: { id: 'a', goal: '写作文', status: 'RUNNING',
+    revision: 0, applied_revision: -1 } } };
+  assert.match(describeTask(session.tasks.a), /等待安全边界/);
+  reduceEvent(session, { sequence: 1, type: 'task.directive_applied', task_id: 'a',
+    payload: { directive_revision: 0, effective_task_request: '写作文' } });
+  assert.doesNotMatch(describeTask(session.tasks.a), /等待安全边界/);
+  assert.equal(session.tasks.a.applied_effective_task_request, '写作文');
 });
 
 test('tool completion clears a restored active tool and preserves parallel calls', async () => {

@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 from contextvars import ContextVar
+from functools import wraps
 from typing import NotRequired
 
 from langchain.agents.middleware import AgentMiddleware, AgentState, hook_config
@@ -86,33 +87,50 @@ class ControlMiddleware(AgentMiddleware):
             "directive_revision": task["revision"],
             "effective_task_request": task["effective_task_request"],
         }
+        if state.get("directive_revision", -1) != task["revision"]:
+            update.update(delivery_checks=0, plan_checks=0)
+            update["messages"] = [
+                RemoveMessage(id=m.id)
+                for m in state["messages"]
+                if (
+                    m.type == "system"
+                    and str(m.content).startswith(("正文尚未交付：", "写作交付校验："))
+                )
+                or (m.type == "ai" and m.additional_kwargs.get("writing_rejected_draft"))
+            ]
         # A stable user message is the effective task view, not a new user turn.
         # Raw user turns and superseded constraints remain immutable in TaskStore.
         user = next((m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), None)
         if user:
-            update["messages"] = [
-                HumanMessage(
-                    content=task["effective_task_request"]
-                    if self.root
-                    else (
-                        str(user.additional_kwargs.get("delegation", user.content))
-                        + "\n父任务最新要求（约束本次委派）："
-                        + task["effective_task_request"]
-                    ),
-                    id=user.id,
-                    additional_kwargs={
-                        **user.additional_kwargs,
-                        "original_request": user.additional_kwargs.get(
-                            "original_request", user.content
+            update.setdefault("messages", []).extend(
+                [
+                    HumanMessage(
+                        content=task["effective_task_request"]
+                        if self.root
+                        else (
+                            str(user.additional_kwargs.get("delegation", user.content))
+                            + "\n父任务最新要求（约束本次委派）："
+                            + task["effective_task_request"]
                         ),
-                        **(
-                            {"delegation": user.additional_kwargs.get("delegation", user.content)}
-                            if not self.root
-                            else {}
-                        ),
-                    },
-                )
-            ]
+                        id=user.id,
+                        additional_kwargs={
+                            **user.additional_kwargs,
+                            "original_request": user.additional_kwargs.get(
+                                "original_request", user.content
+                            ),
+                            **(
+                                {
+                                    "delegation": user.additional_kwargs.get(
+                                        "delegation", user.content
+                                    )
+                                }
+                                if not self.root
+                                else {}
+                            ),
+                        },
+                    )
+                ]
+            )
         return update
 
     @hook_config(can_jump_to=["end"])
@@ -169,7 +187,14 @@ class ControlMiddleware(AgentMiddleware):
 
     @staticmethod
     def model_control_response():
-        return ModelResponse(result=[AIMessage(content="控制已更新，等待安全边界。")])
+        return ModelResponse(
+            result=[
+                AIMessage(
+                    content="控制已更新，等待安全边界。",
+                    additional_kwargs={"stale_task_candidate": True},
+                )
+            ]
+        )
 
     @staticmethod
     def deferred_tool(request):
@@ -193,7 +218,19 @@ class ControlMiddleware(AgentMiddleware):
     async def call_model(self, request, handler):
         if self.stale(request):
             return self.model_control_response()
-        return await handler(request)
+        response = await handler(request)
+        if self.stale(request):
+            # Settle the transport, but never run delivery validators or tools
+            # against an obsolete candidate. The after_model gate revisits model.
+            return ModelResponse(
+                result=[
+                    AIMessage(
+                        content="控制已更新，等待安全边界。",
+                        additional_kwargs={"stale_task_candidate": True},
+                    )
+                ]
+            )
+        return response
 
     def operation_key(self, request):
         namespace = request.runtime.config.get("configurable", {}).get("checkpoint_ns", "root")
@@ -342,6 +379,20 @@ class ControlMiddleware(AgentMiddleware):
         return result
 
 
+def owner_callback(method):
+    @wraps(method)
+    async def routed(self, *args, **kwargs):
+        if asyncio.get_running_loop() is self.owner_loop:
+            return await method(self, *args, **kwargs)
+        # Some SDK error paths run async callbacks on a helper loop/thread.
+        # SQLite and the collector must still have exactly one owning writer.
+        return await asyncio.wrap_future(
+            asyncio.run_coroutine_threadsafe(method(self, *args, **kwargs), self.owner_loop)
+        )
+
+    return routed
+
+
 class TaskBudgetCallback(AsyncCallbackHandler):
     """Count every transport invocation, including compaction and nested models."""
 
@@ -353,11 +404,13 @@ class TaskBudgetCallback(AsyncCallbackHandler):
     def __init__(self, store, task_id, settings, summary=None):
         self.store, self.task_id, self.settings = store, task_id, settings
         self.summary = summary
+        self.owner_loop = asyncio.get_running_loop()
 
     def observed(self, task):
         if self.summary:
             task["trace_summary"] = self.summary()
 
+    @owner_callback
     async def persist_observation(self):
         with self.store.transaction():
             task = self.store.task(self.task_id)
@@ -373,6 +426,7 @@ class TaskBudgetCallback(AsyncCallbackHandler):
     async def on_llm_error(self, error, *, run_id, **kwargs):
         await self.persist_observation()
 
+    @owner_callback
     async def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         with self.store.transaction():
             task = self.store.task(self.task_id)
@@ -382,6 +436,7 @@ class TaskBudgetCallback(AsyncCallbackHandler):
             self.observed(task)
             self.store.save(task)
 
+    @owner_callback
     async def on_llm_end(self, response, *, run_id, **kwargs):
         usages = [
             getattr(g.message, "usage_metadata", None)

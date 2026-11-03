@@ -1,5 +1,7 @@
 """Small-window simulation using Deep Agents' existing history compaction."""
 
+import hashlib
+import json
 from copy import deepcopy
 from functools import partial
 
@@ -216,12 +218,99 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         )
 
     def _get_effective_messages(self, request):
-        messages = super()._get_effective_messages(request)
-        latest = self._latest_user(request.messages) if self.window else None
-        if latest is not None and not self._contains_message(messages, latest):
+        # Do not insert synthetic entries into this indexed list: the Harness
+        # translates its cutoff back into raw checkpoint indexes on every summary.
+        return super()._get_effective_messages(request)
+
+    def _with_current_request(self, request, latest):
+        if latest is not None and not self._contains_message(request.messages, latest):
+            messages = list(request.messages)
             index = 1 if messages and self._is_summary_message(messages[0]) else 0
             messages.insert(index, latest)
-        return messages
+            return request.override(messages=messages)
+        return request
+
+    def _settled_write_previews(self, messages):
+        """Archive completed write arguments, without altering replay/checkpoint data.
+
+        The newest tool pair is indivisible during compaction. A large write's
+        arguments can therefore exhaust the entire packet even after summarizing.
+        Settled failures also qualify: their rejected arguments and echoed errors
+        can be enormous. Their failure remains explicit. Pending calls stay exact.
+        """
+        settled = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
+        archives, result, receipts = [], [], {}
+        for message in messages:
+            calls, changed = [], False
+            for call in getattr(message, "tool_calls", []):
+                args = dict(call.get("args", {}))
+                if call["id"] in settled and call["name"] in {"write_file", "edit_file"}:
+                    receipt = settled[call["id"]]
+                    payload = json.dumps(
+                        {**call, "settled_result": receipt.model_dump(mode="json")},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2,
+                    )
+                    path = (
+                        "/large_tool_results/settled-write-"
+                        + hashlib.sha256(payload.encode()).hexdigest()
+                        + ".json"
+                    )
+                    for key in ("content", "old_string", "new_string"):
+                        if isinstance(args.get(key), str) and len(args[key]) > 256:
+                            body_path = path.removesuffix(".json") + "-" + key + ".txt"
+                            archives.append((body_path, args[key].encode()))
+                            args[key] = (
+                                f"[已结算写入参数；当前文件：{args.get('file_path', '')}；"
+                                f"完整调用已归档，正文参数副本：{body_path}。成功或失败以工具回执为准，"
+                                "用read_file分段读取当前文件，不要重放写入。]"
+                            )
+                            changed = True
+                    if args != call.get("args", {}):
+                        archives.append((path, payload.encode()))
+                        if len(str(receipt.content)) > 256:
+                            receipts[receipt.tool_call_id] = receipt.model_copy(
+                                update={
+                                    "content": str(receipt.content)[:160]
+                                    + f"\n[完整写入回执已归档：{path}。失败不表示成功，"
+                                    "保留已成功的修改，读取当前文件后再决定下一步。]"
+                                }
+                            )
+                calls.append({**call, "args": args})
+            result.append(message.model_copy(update={"tool_calls": calls}) if changed else message)
+        result = [
+            receipts.get(m.tool_call_id, m) if isinstance(m, ToolMessage) else m for m in result
+        ]
+        calls = {c["id"]: c for m in messages for c in getattr(m, "tool_calls", [])}
+        for index, message in enumerate(result):
+            if not isinstance(message, ToolMessage) or not isinstance(message.content, str):
+                continue
+            if (
+                calls.get(message.tool_call_id, {}).get("name") == "read_file"
+                or len(message.content) <= 512
+            ):
+                continue
+            # execute(cat/head), search, and error receipts need the same
+            # small-window treatment as read_file. The generic Harness fallback
+            # retains 4,000 characters, which is larger than the available room.
+            raw = message.content
+            path = (
+                "/large_tool_results/receipt-" + hashlib.sha256(raw.encode()).hexdigest() + ".txt"
+            )
+            archives.append((path, raw.encode()))
+            result[index] = message.model_copy(
+                update={
+                    "content": raw[:160]
+                    + f"\n[回执预览；完整结果：{path}；用read_file分段读取。]\n"
+                    + raw[-100:],
+                    "additional_kwargs": {
+                        **message.additional_kwargs,
+                        "context_archive_path": path,
+                    },
+                }
+            )
+        return result, archives
 
     def _partition_messages(self, messages, cutoff_index):
         older, preserved = super()._partition_messages(messages, cutoff_index)
@@ -258,8 +347,12 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         )
         for index, message in candidates:
             call = calls.get(message.tool_call_id, {})
-            path = call.get("args", {}).get("file_path")
-            if call.get("name") != "read_file" or not isinstance(path, str) or not path:
+            path = (
+                call.get("args", {}).get("file_path")
+                if call.get("name") == "read_file"
+                else message.additional_kwargs.get("context_archive_path")
+            )
+            if not isinstance(path, str) or not path:
                 continue
             notice = (
                 f"\n[Preview truncated to fit the context budget. Full file: {path}. "
@@ -286,10 +379,22 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         return request.override(messages=messages), replacements
 
     def _call_with_budget(self, request, handler, **kwargs):
+        request = self._with_current_request(
+            request, self._latest_user(request.state.get("messages", []))
+        )
         original = request
-        request, clipped = self._fit_read_results(request)
-        if clipped and kwargs.get("rejected") is None:
-            kwargs["rejected"] = original
+        # Compact history first. Preserve a settled draft verbatim whenever the
+        # actual post-compaction packet fits; premature argument eviction makes
+        # the model repeatedly reread the draft it just wrote.
+        if self.window:
+            messages, args = self._count_args(request)
+            if request.model.count_input_tokens(messages, **args) > self._input_budget(request):
+                previews, archives = self._settled_write_previews(request.messages)
+                if archives and all(
+                    not item.error for item in self._backend.upload_files(archives)
+                ):
+                    request = request.override(messages=previews)
+        clipped = []
         fitted = []
 
         def checked(candidate):
@@ -297,14 +402,46 @@ class ContextWindowMiddleware(SummarizationMiddleware):
             fitted.extend(updates)
             return handler(candidate)
 
+        if self.window:
+            try:
+                # The provider count is authoritative. The generic estimate can
+                # evict a 40-character receipt into a 500-character notice and
+                # then reject the non-reduction before our provider gate runs.
+                candidate, updates = self._fit_provider(request)
+                fitted.extend(updates)
+            except ContextOverflowError:
+                pass
+            else:
+                rejected = self._with_current_request(
+                    kwargs.get("rejected", original),
+                    self._latest_user(request.state.get("messages", [])),
+                )
+                candidate_messages, candidate_args = self._count_args(candidate)
+                rejected_messages, rejected_args = self._count_args(rejected)
+                if kwargs.get("error") is None or (
+                    candidate.model.count_input_tokens(candidate_messages, **candidate_args)
+                    < rejected.model.count_input_tokens(rejected_messages, **rejected_args)
+                ):
+                    return handler(candidate), [*clipped, *fitted]
         response, replacements = super()._call_with_budget(request, checked, **kwargs)
         return response, [*clipped, *fitted, *replacements]
 
     async def _acall_with_budget(self, request, handler, **kwargs):
+        request = self._with_current_request(
+            request, self._latest_user(request.state.get("messages", []))
+        )
         original = request
-        request, clipped = self._fit_read_results(request)
-        if clipped and kwargs.get("rejected") is None:
-            kwargs["rejected"] = original
+        if self.window:
+            messages, args = self._count_args(request)
+            if await request.model.acount_input_tokens(messages, **args) > self._input_budget(
+                request
+            ):
+                previews, archives = self._settled_write_previews(request.messages)
+                if archives:
+                    uploaded = await self._backend.aupload_files(archives)
+                    if all(not item.error for item in uploaded):
+                        request = request.override(messages=previews)
+        clipped = []
         fitted = []
 
         async def checked(candidate):
@@ -312,6 +449,24 @@ class ContextWindowMiddleware(SummarizationMiddleware):
             fitted.extend(updates)
             return await handler(candidate)
 
+        if self.window:
+            try:
+                candidate, updates = await self._afit_provider(request)
+                fitted.extend(updates)
+            except ContextOverflowError:
+                pass
+            else:
+                rejected = self._with_current_request(
+                    kwargs.get("rejected", original),
+                    self._latest_user(request.state.get("messages", [])),
+                )
+                candidate_messages, candidate_args = self._count_args(candidate)
+                rejected_messages, rejected_args = self._count_args(rejected)
+                if kwargs.get("error") is None or (
+                    await candidate.model.acount_input_tokens(candidate_messages, **candidate_args)
+                    < await rejected.model.acount_input_tokens(rejected_messages, **rejected_args)
+                ):
+                    return await handler(candidate), [*clipped, *fitted]
         response, replacements = await super()._acall_with_budget(request, checked, **kwargs)
         return response, [*clipped, *fitted, *replacements]
 
@@ -345,11 +500,15 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         )
         for index, message in results:
             call = calls.get(message.tool_call_id, {})
-            path = call.get("args", {}).get("file_path")
-            if call.get("name") != "read_file" or not isinstance(path, str) or not path:
+            path = (
+                call.get("args", {}).get("file_path")
+                if call.get("name") == "read_file"
+                else message.additional_kwargs.get("context_archive_path")
+            )
+            if not isinstance(path, str) or not path:
                 continue
             notice = (
-                f"\n[Context preview truncated. Full file: {path}. "
+                f"\n[Preview truncated to fit the context budget. Full file: {path}. "
                 "Read specific lines with offset/limit.]"
             )
             stub = message.model_copy(update={"content": notice})
@@ -422,7 +581,10 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         if not self.window:
             return super().wrap_model_call(self._default_request(request), handler)
 
+        latest = self._latest_user(request.messages)
+
         def checked(candidate):
+            candidate = self._with_current_request(candidate, latest)
             messages, kwargs = self._count_args(candidate)
             if candidate.model.count_input_tokens(messages, **kwargs) > self._input_budget(
                 candidate
@@ -433,7 +595,6 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         request = request.override(
             tools=compact_tools(selected_tools(request.messages, request.tools))
         )
-        latest = self._latest_user(request.messages)
         if latest and standalone_question(str(latest.content)):
             response, replacements = self._call_with_budget(
                 request.override(messages=[latest]), checked
@@ -445,7 +606,10 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         if not self.window:
             return await super().awrap_model_call(self._default_request(request), handler)
 
+        latest = self._latest_user(request.messages)
+
         async def checked(candidate):
+            candidate = self._with_current_request(candidate, latest)
             messages, kwargs = self._count_args(candidate)
             count = await candidate.model.acount_input_tokens(messages, **kwargs)
             if count > self._input_budget(candidate):
@@ -455,7 +619,6 @@ class ContextWindowMiddleware(SummarizationMiddleware):
         request = request.override(
             tools=compact_tools(selected_tools(request.messages, request.tools))
         )
-        latest = self._latest_user(request.messages)
         if latest and standalone_question(str(latest.content)):
             response, replacements = await self._acall_with_budget(
                 request.override(messages=[latest]), checked

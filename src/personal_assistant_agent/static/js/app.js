@@ -1,4 +1,5 @@
-import { Duplex, requestJSON, describeTask } from './duplex.js?v=4';
+import { Duplex, requestJSON, describeTask } from './duplex.js?v=8';
+import { mergeSessions, discoverSessions } from './history.js?v=1';
 import { getStatus, streamChat } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { latestTodos, normalizeTodos, renderPlan } from './planning.js';
@@ -11,6 +12,7 @@ let currentId = null;
 let job = null;
 let toastTimer;
 let tracingEnabled = false;
+let hiddenConversations = [];
 const timeline = new TimelinePanel();
 const duplex = new Duplex(error => {
   if (error) toast(error);
@@ -48,6 +50,7 @@ function toast(text) {
 function loadHistory() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    hiddenConversations = Array.isArray(saved.hiddenConversations) ? saved.hiddenConversations : [];
     let renamed = false;
     sessions = (Array.isArray(saved.sessions) ? saved.sessions : [])
       .filter(s => s && typeof s.id === 'string' && typeof s.title === 'string' && Array.isArray(s.messages))
@@ -66,7 +69,10 @@ function loadHistory() {
 
 function persist() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, currentId }));
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    hiddenConversations = [...new Set([...hiddenConversations, ...(saved.hiddenConversations || [])])];
+    sessions = mergeSessions(sessions, saved.sessions || [], hiddenConversations);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ sessions, currentId, hiddenConversations }));
     $('storage-note').textContent = '记录保存在此浏览器';
   } catch {
     $('storage-note').textContent = '记录保存失败，本次对话暂存于页面';
@@ -100,6 +106,7 @@ function renderHistory() {
   }
   for (const session of sessions) {
     const button = document.createElement('button');
+    button.dataset.conversationId = session.id;
     button.className = 'history-item' + (session.id === currentId ? ' selected' : '');
     button.title = session.title;
     const label = document.createElement('span');
@@ -525,14 +532,28 @@ $('clear-history').addEventListener('click', () => {
   if (!sessions.length) { toast('还没有本机对话记录'); return; }
   if (!confirm('清空此浏览器内的对话记录？此操作无法撤销。')) return;
   stopGeneration();
+  hiddenConversations = [...new Set([...hiddenConversations, ...sessions.map(s => s.id)])];
   sessions = [];
   newChat();
   toast('本机对话记录已清空');
 });
 window.addEventListener('pagehide', () => { duplex.disconnect(); persist(); });
+window.addEventListener('storage', event => {
+  if (event.key !== STORAGE_KEY) return;
+  try {
+    const saved = JSON.parse(event.newValue || '{}');
+    hiddenConversations = [...new Set([...hiddenConversations, ...(saved.hiddenConversations || [])])];
+    sessions = mergeSessions(sessions, saved.sessions || [], hiddenConversations);
+    renderHistory();
+  } catch { /* Keep the current page if another tab's storage is unavailable. */ }
+});
 loadHistory();
 renderHistory();
 renderMessages();
 updateSend();
 refreshStatus();
 if (activeSession()) duplex.connect(activeSession());
+requestJSON('/api/conversations').then(directory => {
+  sessions = discoverSessions(sessions, directory.conversations, hiddenConversations);
+  persist(); renderHistory();
+}).catch(() => {});

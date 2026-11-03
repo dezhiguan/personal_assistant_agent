@@ -13,7 +13,8 @@ from deepagents.backends.protocol import DeleteResult, ExecuteResponse, SandboxB
 
 EXECUTE_DESCRIPTION = """Execute one allowed command in the workspace virtual root (/).
 Supported: pwd; ls [path]; cat file...; head/tail [-n 1..1000] file;
-wc [-l|-w|-c] file; mkdir [-p] path; touch file; echo text...
+wc [-l|-w|-c|-m] file; mkdir [-p] path; touch file; echo text...
+wc -m counts Unicode characters; -c counts UTF-8 bytes; -w counts whitespace-separated words.
 Paths are relative to /, which maps to the configured workspace directory.
 No shell expansion, pipes, redirection, chaining, environment variables, scripts,
 interpreters, network commands or other executables. Use write_file/edit_file
@@ -141,11 +142,13 @@ class WorkspaceBackend(FilesystemBackend, SandboxBackendProtocol):
             lines = self._text(values[0]).splitlines(keepends=True)
             return "".join(lines[:count] if name == "head" else lines[-count:])
         if name == "wc":
-            flag = values.pop(0) if values and values[0] in {"-l", "-w", "-c"} else ""
+            flag = values.pop(0) if values and values[0] in {"-l", "-w", "-c", "-m"} else ""
             if len(values) != 1:
-                raise ValueError("用法：wc [-l|-w|-c] file")
+                raise ValueError("用法：wc [-l|-w|-c|-m] file")
             text = self._text(values[0])
             counts = {"-l": text.count("\n"), "-w": len(text.split()), "-c": len(text.encode())}
+            if flag == "-m":
+                return str(len(text)) + "\n"
             return str(counts[flag]) + "\n" if flag else " ".join(map(str, counts.values())) + "\n"
         if name in {"mkdir", "touch"}:
             parents = name == "mkdir" and values[:1] == ["-p"]

@@ -168,6 +168,66 @@ def visible_length(text: str) -> int:
     return answer_length(text, "visible")
 
 
+def writing_body(answer: str) -> str:
+    """Separate a short explicit delivery receipt from the requested composition."""
+    heading = re.search(r"(?m)^#{1,6}\s+\S", answer)
+    if heading and heading.start() <= 300:
+        preamble = answer[: heading.start()]
+        if re.search(r"完整正文|以下.{0,8}正文|已保存|经.{0,20}实测", preamble):
+            answer = answer[heading.start() :]
+    else:
+        marker = re.search(r"(?:以下|下面)(?:为|是)(?:完整|作文)?正文[：:]\s*\n", answer[:300])
+        if marker:
+            answer = answer[marker.end() :]
+    # A download link is a receipt, not the ending of the essay. Only standalone,
+    # explicitly labelled receipt lines are excluded; arbitrary prose is kept.
+    answer = re.sub(
+        r"\n+(?:---\s*\n+)?(?:\[(?:下载|查看)(?:作文|文件|成稿)[^\]\n]*\]\([^\n]+\)|"
+        r"(?:文件)?已保存(?:至|到)[^\n]+)[。.]?\s*$",
+        "",
+        answer,
+    )
+    return answer.strip()
+
+
+def writing_delivery_issue(request: str, answer: str) -> str | None:
+    """None is not a writing contract; empty string means the contract is met."""
+    if not re.search(r"作文|散文|故事|文章", request):
+        return None
+    match = re.search(r"(?:字数\s*=\s*)?(\d+)\s*(字|词)", request)
+    if not match:
+        return None
+    target, unit = int(match[1]), match[2]
+    if target < 80:
+        return None
+    answer = writing_body(answer)
+    english = bool(re.search(r"语言\s*=\s*(?:英文|英语)", request))
+    chinese = bool(re.search(r"语言\s*=\s*(?:中文|汉语)", request))
+    count = (
+        len(re.findall(r"\b[A-Za-z]+(?:['’-][A-Za-z]+)*\b", answer))
+        if english or unit == "词"
+        else visible_length(answer)
+    )
+    capped = bool(re.search(r"不超过|最多|以内|以下|上限", request))
+    low, high = (0, target) if capped else (int(target * 0.9), int(target * 1.1))
+    if not low <= count <= high:
+        return (
+            f"当前正文实测{count}{'词' if english or unit == '词' else '字'}，需要{low}–{high}，"
+            "不能通过删除结尾或截断正文凑字数"
+        )
+    han = len(re.findall(r"[\u4e00-\u9fff]", answer))
+    letters = len(re.findall(r"[A-Za-z]", answer))
+    if chinese and han < letters:
+        return "最新语言要求是中文，请使用中文正文"
+    if english and han > max(20, letters * 0.1):
+        return "最新语言要求是英文，请使用英文正文"
+    ending = re.sub(r"\s*[（(](?:全文|正文)?(?:共|约)?\s*\d+\s*[字词][）)]\s*$", "", answer)
+    ending = re.sub(r"[*_`]+\s*$", "", ending)
+    if not re.search(r"[。！？.!?][”’\"'」』]?\s*$", ending):
+        return "正文缺少完整结尾"
+    return ""
+
+
 def initial_steps(text: str) -> list[str]:
     # Explicit ordered work clauses: avoid creating plans for explanations or
     # quoted examples with no requested deliverable.

@@ -14,6 +14,7 @@ from importlib.metadata import version
 from pathlib import Path
 from uuid import uuid4
 
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import HumanMessage, RemoveMessage
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.errors import GraphDrained
@@ -36,7 +37,12 @@ from personal_assistant_agent.interaction.store import ACTIVE, TERMINAL, Conflic
 from personal_assistant_agent.observability.timeline import InvocationCollector, measured_stream
 from personal_assistant_agent.observability.tracer import CostTracer
 from personal_assistant_agent.schemas.chat import StoredChatRequest
-from personal_assistant_agent.services.chat import ChatService, _state_updates, public_error
+from personal_assistant_agent.services.chat import (
+    MODEL_TRANSPORT_ERRORS,
+    ChatService,
+    _state_updates,
+    public_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -283,7 +289,13 @@ class InteractionRuntime:
                 prior = next((t for t in tasks if t["id"] == target_id), None)
                 if prior:
                     decision["expected_revision"] = prior["revision"]
-                    if decision["intent"] == "NEW_TASK" and prior["status"] in TERMINAL:
+                    if decision["intent"] == "NEW_TASK" and (
+                        prior["status"] in TERMINAL
+                        or (
+                            prior["status"] == "RECOVERY_REQUIRED"
+                            and re.search(r"新建|创建", content)
+                        )
+                    ):
                         decision["source_task_id"] = target_id
             result = self.store.receive(
                 conversation,
@@ -511,26 +523,36 @@ class InteractionRuntime:
                         if cursor["id"] in seen:
                             raise CheckpointIntegrityError("Cyclic result reference")
                         seen.add(cursor["id"])
-                        if cursor.get("result"):
-                            ancestry.append(cursor["result"])
+                        # The immediate result is the revision base. Older versions
+                        # remain in TaskStore; copying every full ancestor duplicates
+                        # obsolete drafts and grows context with every revision.
+                        if not ancestry and (cursor.get("result") or cursor.get("draft")):
+                            ancestry.append(
+                                cursor.get("result")
+                                or (
+                                    "未通过交付校验的草稿，仅供修订，不是已交付成果：\n"
+                                    + cursor["draft"]
+                                )
+                            )
                         cursor = (
                             self.store.task(cursor["source_task_id"], task["conversation_id"])
                             if cursor["source_task_id"]
                             else None
                         )
-                    if ancestry:
+                    if ancestry or imported:
                         from langchain_core.messages import AIMessage
 
                         history = [
                             AIMessage(content="关联原成果（历史资料，须按最新要求修订）：\n" + text)
                             for text in reversed(ancestry)
                         ]
-                        history.append(
-                            AIMessage(
-                                content="原成果文件副本："
-                                + json.dumps(imported, ensure_ascii=False)
+                        if imported:
+                            history.append(
+                                AIMessage(
+                                    content="原成果文件副本："
+                                    + json.dumps(imported, ensure_ascii=False)
+                                )
                             )
-                        )
                         input_value["messages"] = history + input_value["messages"]
                 else:
                     input_value = None
@@ -565,6 +587,13 @@ class InteractionRuntime:
                         elif mode == "updates":
                             for value in data.values():
                                 for update in _state_updates(value):
+                                    if update.get("delivery_drafts"):
+                                        with self.store.transaction():
+                                            current = self.store.task(task_id)
+                                            current["draft"] = list(
+                                                update["delivery_drafts"].values()
+                                            )[-1]
+                                            self.store.save(current)
                                     if "todos" in update:
                                         with self.store.transaction():
                                             current = self.store.task(task_id)
@@ -654,7 +683,17 @@ class InteractionRuntime:
             raise
         except Exception as error:
             code, message = public_error(error)
-            if isinstance(error, (OSError, sqlite3.Error, CheckpointIntegrityError)):
+            logger.warning(
+                "Task failed task=%s error_type=%s.%s",
+                task_id,
+                type(error).__module__,
+                type(error).__name__,
+            )
+            if isinstance(error, ContextOverflowError):
+                logger.warning("Task context exhausted task=%s detail=%s", task_id, str(error))
+            if isinstance(
+                error, (OSError, sqlite3.Error, CheckpointIntegrityError)
+            ) and not isinstance(error, MODEL_TRANSPORT_ERRORS):
                 code = "CHECKPOINT_REVIEW_REQUIRED"
                 message = "持久化写入或消息链异常，需核对执行现场后再创建修订任务。"
             elif isinstance(error, TaskBudgetExceeded):
@@ -680,6 +719,7 @@ class InteractionRuntime:
                         APIConnectionError,
                         APITimeoutError,
                         RateLimitError,
+                        *MODEL_TRANSPORT_ERRORS,
                     ),
                 )
                 or any(r[0] not in READ_ONLY for r in unknown)
@@ -692,10 +732,34 @@ class InteractionRuntime:
                         APIConnectionError,
                         APITimeoutError,
                         RateLimitError,
+                        *MODEL_TRANSPORT_ERRORS,
+                        ContextOverflowError,
                     ),
                 )
                 and not unknown
+                and (
+                    not isinstance(error, ContextOverflowError)
+                    or self.store.task(task_id).get("context_recovery_attempts", 0) < 1
+                )
             )
+            if isinstance(error, ContextOverflowError):
+                status = "RECOVERY_REQUIRED"
+                message = "上下文整理后仍无法容纳下一步。已有草稿、文件和完成步骤已保留。" + (
+                    "可以输入“继续”沿当前任务重新整理并恢复；不会重复已完成的写操作。"
+                    if recoverable
+                    else "当前输入和必要工具仍无法容纳，无法安全自动恢复。"
+                    "请缩小要求并创建关联原成果的后续任务。"
+                )
+            elif recoverable:
+                message += " 已保存执行现场，可以输入“继续”沿当前任务恢复。"
+            try:
+                artifacts = await asyncio.to_thread(index_artifacts, self.task_settings(task_id))
+                with self.store.transaction():
+                    current = self.store.task(task_id)
+                    current["artifacts"] = artifacts
+                    self.store.save(current)
+            except OSError:
+                pass
             try:
                 self.store.state(
                     task_id,

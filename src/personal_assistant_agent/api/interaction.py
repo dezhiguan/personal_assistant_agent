@@ -78,6 +78,11 @@ async def snapshot(conversation: UUID, request: Request):
     }
 
 
+@router.get("/conversations")
+async def conversations(request: Request):
+    return {"conversations": runtime(request).store.conversations()}
+
+
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: UUID, conversation_id: UUID, request: Request):
     try:

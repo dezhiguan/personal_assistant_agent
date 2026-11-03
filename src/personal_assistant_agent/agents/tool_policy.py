@@ -105,6 +105,27 @@ def selected_tools(messages, tools):
     text = str(user.content) if user else ""
     if standalone_question(text) or re.search(r"(?:不|不要|禁止|无需)调用(?:任何)?工具", text):
         return []
+    # Select the existing tools needed by a self-contained creative task. Keep
+    # external research and explicit delegation on the full capability path.
+    if re.search(r"作文|散文|故事|文章", text) and not re.search(
+        r"工具|检索|搜索|资料|引用|新闻|分析|研究|报告|数据|来源|子代理|委派|删除",
+        text,
+    ):
+        turn = _turn_messages(messages)
+        calls = {c["id"]: c["name"] for m in turn for c in getattr(m, "tool_calls", [])}
+        used = {
+            calls.get(m.tool_call_id)
+            for m in turn
+            if isinstance(m, ToolMessage) and m.status == "success"
+        }
+        file_work = re.search(r"文件|保存|读取|写入|核验|校验|wc", text) or used - {
+            None,
+            "write_todos",
+        }
+        names = {"write_todos"}
+        if file_work:
+            names |= {"write_file", "edit_file", "read_file", "execute", "ls", "calculate"} | used
+        return [t for t in authorized_tools(messages, tools) if tool_name(t) in names]
     if repeated_read(messages):
         return []
     return authorized_tools(messages, tools)

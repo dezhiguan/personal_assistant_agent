@@ -8,6 +8,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
 
+import httpcore
+import httpx
 from langchain.agents.middleware.model_call_limit import ModelCallLimitExceededError
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langchain_core.messages import AIMessage, ToolMessage
@@ -17,6 +19,8 @@ from langgraph.types import Command
 from langsmith import Client, tracing_context
 from openai import APIConnectionError, APITimeoutError, AuthenticationError, RateLimitError
 from pydantic import TypeAdapter
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import Timeout as RequestsTimeout
 
 from personal_assistant_agent.agents.token_budget import TokenBudgetViolation, TokenCountUnavailable
 from personal_assistant_agent.core.config import Settings
@@ -33,6 +37,19 @@ from personal_assistant_agent.services.plan_edits import explicit_edit
 
 logger = logging.getLogger(__name__)
 todo_adapter = TypeAdapter(TodoList)
+MODEL_TIMEOUT_ERRORS = (
+    APITimeoutError,
+    httpx.TimeoutException,
+    httpcore.TimeoutException,
+    RequestsTimeout,
+)
+MODEL_TRANSPORT_ERRORS = (
+    APIConnectionError,
+    httpx.TransportError,
+    httpcore.NetworkError,
+    RequestsConnectionError,
+    *MODEL_TIMEOUT_ERRORS,
+)
 
 
 def _state_updates(value):
@@ -72,6 +89,11 @@ def public_error(error: Exception) -> tuple[str, str]:
             "MODEL_CONTEXT_LIMIT",
             "压缩后仍超过上下文预算，请缩短本次输入、减少启用工具或调大模拟窗口。",
         )
+    if isinstance(error, ValueError) and str(error) == "Writing delivery validation failed":
+        return (
+            "DELIVERY_VALIDATION_FAILED",
+            "已有草稿未能满足最新篇幅、语言或完整结尾要求，本次未交付。草稿已保留；可以说明要保留的段落并创建关联修订任务。",
+        )
     if isinstance(error, AuthenticationError):
         return "MODEL_AUTH_ERROR", "Qwen 认证失败，请检查服务端的 API Key 和地域。"
     if isinstance(error, RateLimitError):
@@ -86,14 +108,14 @@ def public_error(error: Exception) -> tuple[str, str]:
             "WORKFLOW_CALL_LIMIT",
             "本轮任务达到调用次数上限，已停止继续调用。请核对已完成成果后继续。",
         )
-    if isinstance(error, APITimeoutError):
+    if isinstance(error, MODEL_TIMEOUT_ERRORS):
         return "MODEL_TIMEOUT", "等待模型回复超时，请重试。"
     if isinstance(error, TimeoutError):
         return (
             "WORKFLOW_TIMEOUT",
             "本轮任务达到总时限，已保存的文件和计划仍保留。请核对现有成果后继续。",
         )
-    if isinstance(error, APIConnectionError):
+    if isinstance(error, MODEL_TRANSPORT_ERRORS):
         return "MODEL_CONNECTION_ERROR", "暂时无法连接 Qwen 服务，请稍后重试。"
     return "MODEL_ERROR", "这次回复未能完成，请重试或开启新对话。"
 

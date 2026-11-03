@@ -26,10 +26,12 @@ export function describeTask(task) {
     const current = todos.filter(t => t.status === 'in_progress').map(t => t.content);
     if (current.length) lines.push('当前步骤：' + current.join('；'));
   }
-  if (tools.length) lines.push('正在调用：' + tools.join('、'));
+  if (tools.length) lines.push((task.status === 'RECOVERY_REQUIRED' ? '待核对的操作：' : '正在调用：') + tools.join('、'));
   if (task.reason || task.error?.message) lines.push(task.reason || task.error.message);
-  if (task.revision > task.applied_revision && !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(task.status)) lines.push('最新要求等待安全边界应用');
-  else if (task.revision > 0) lines.push('最新要求已应用');
+  if (task.revision > task.applied_revision) {
+    lines.push('最新要求等待安全边界应用');
+    if (task.applied_effective_task_request) lines.push('已应用要求：' + task.applied_effective_task_request);
+  } else if (task.revision > 0) lines.push('最新要求已应用');
   return lines.join('\n');
 }
 
@@ -40,6 +42,45 @@ function answerFor(session, key) {
     session.messages.push(answer);
   }
   return answer;
+}
+
+export function applyReceipt(session, answer, ack) {
+  answer.acceptedIntent = ack.intent;
+  if (ack.intent === 'CHAT') return;
+  answer.state = 'complete';
+  delete answer.error;
+  if (ack.intent === 'NEW_TASK') {
+    answer.text = ack.revision_of ? '已创建关联原成果的修订任务。' : '任务已接收，后台执行期间可以继续聊天或补充要求。';
+    answer.taskId = ack.task_id;
+  } else if (ack.intent === 'STEER') {
+    answer.text = `修正已收到，等待安全执行边界应用。\n\n当前接受的要求：${ack.effective_task_request}`;
+  } else if (ack.intent === 'CLARIFY') {
+    answer.text = ack.question + (ack.candidates?.length ? '\n\n' + ack.candidates.map((id, i) =>
+      `${i + 1}. ${session.tasks?.[id]?.goal || '任务'} · ${id.slice(0, 8)}`).join('\n')
+      + '\n\n请直接回复任务名称或编号。' : '');
+  } else if (ack.intent === 'STATUS') {
+    answer.text = ack.tasks.map(describeTask).join('\n\n') || '当前没有任务。';
+  } else answer.text = '控制指令已收到，等待安全执行边界确认；任务状态会在对话中更新。';
+}
+
+function orderSnapshotMessages(session, rows) {
+  const ordered = [], seen = new Set();
+  const add = message => { if (message && !seen.has(message.id)) { seen.add(message.id); ordered.push(message); } };
+  const first = session.messages.findIndex(m => rows.some(r => r.role === 'user' && r.id === m.id));
+  const legacy = first < 0 ? session.messages : session.messages.slice(0, first);
+  for (const row of rows) {
+    if (row.role === 'user') {
+      add(session.messages.find(m => m.id === row.id));
+      add(session.messages.find(m => m.replyTo === row.id));
+      const receipt = row.response ? JSON.parse(row.response) : {};
+      if (receipt.intent === 'NEW_TASK' && !session.tasks[receipt.task_id]?.result) {
+        add(session.messages.find(m => m.replyTo === `task:${receipt.task_id}`));
+      }
+    }
+    if (row.kind === 'RESULT') add(session.messages.find(m => m.replyTo === `task:${row.id.slice(7)}`));
+  }
+  session.messages = [...legacy.filter(m => !seen.has(m.id)), ...ordered,
+    ...session.messages.slice(Math.max(0, first)).filter(m => !seen.has(m.id))];
 }
 
 export function reduceEvent(session, event, trace = () => {}) {
@@ -102,10 +143,11 @@ export function reduceEvent(session, event, trace = () => {}) {
     if (event.type === 'tool.started') active[JSON.stringify([payload.namespace, payload.call_id])] = payload;
     delete task.currentTool;
   }
-  if (event.type === 'control.applied') {
+  if (['control.applied', 'task.directive_applied'].includes(event.type)) {
     const task = session.tasks[event.task_id];
     if (task) {
       task.applied_revision = Math.max(task.applied_revision ?? -1, payload.directive_revision);
+      if (payload.effective_task_request) task.applied_effective_task_request = payload.effective_task_request;
       task.controlNote = task.applied_revision < task.revision ? '新要求等待应用' : '新要求已应用';
     }
   }
@@ -170,6 +212,9 @@ export class Duplex {
         if (row.role === 'user' && !session.messages.some(m => m.id === row.id)) {
           session.messages.push({ id: row.id, role: 'user', text: row.content, state: 'complete' });
         }
+        if (row.role === 'user' && row.kind !== 'CHAT' && row.response) {
+          applyReceipt(session, answerFor(session, row.id), JSON.parse(row.response));
+        }
         if (row.kind === 'RESULT') {
           const answer = answerFor(session, `task:${row.id.slice(7)}`);
           if (!answer.taskResult) {
@@ -212,6 +257,9 @@ export class Duplex {
           endTrace(answer, 'complete');
         }
       }
+      if (snapshot.messages.some(r => r.role === 'user' && r.kind !== 'CHAT' && r.response)) {
+        orderSnapshotMessages(session, snapshot.messages);
+      }
       session.eventCursor = snapshot.cursor;
       this.change();
       this.source = new EventSource(`/api/conversations/${session.id}/events?after=${snapshot.cursor}`);
@@ -231,21 +279,7 @@ export class Duplex {
     else if (mode) payload.target_task_id = mode;
     try {
       const ack = await requestJSON(`/api/conversations/${session.id}/messages`, payload);
-      answer.acceptedIntent = ack.intent;
-      if (ack.intent === 'CHAT') { this.change(); return; }
-      answer.state = 'complete';
-      if (ack.intent === 'NEW_TASK') {
-        answer.text = ack.revision_of ? '已创建关联原成果的修订任务。' : '任务已接收，后台执行期间可以继续聊天或补充要求。';
-        answer.taskId = ack.task_id;
-      } else if (ack.intent === 'STEER') {
-        answer.text = `修正已收到，等待安全执行边界应用。\n\n当前接受的要求：${ack.effective_task_request}`;
-      } else if (ack.intent === 'CLARIFY') {
-        answer.text = ack.question + (ack.candidates?.length ? '\n\n' + ack.candidates.map((id, i) =>
-          `${i + 1}. ${session.tasks?.[id]?.goal || '任务'} · ${id.slice(0, 8)}`).join('\n')
-          + '\n\n请直接回复任务名称或编号。' : '');
-      } else if (ack.intent === 'STATUS') {
-        answer.text = ack.tasks.map(describeTask).join('\n\n') || '当前没有任务。';
-      } else answer.text = '控制指令已收到，等待安全执行边界确认；任务状态会在对话中更新。';
+      applyReceipt(session, answer, ack);
       this.change();
     } catch (error) {
       Object.assign(answer, { state: 'error', error: error.message });
