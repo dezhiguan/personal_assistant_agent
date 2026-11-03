@@ -8,11 +8,13 @@ from uuid import uuid4
 
 import pytest
 import requests
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from langsmith import Client
 from langsmith.utils import LangSmithRateLimitError
 
 from personal_assistant_agent.core.config import Settings
-from personal_assistant_agent.evaluation import runner, trace_delivery
+from personal_assistant_agent.evaluation import runner, scenarios, trace_delivery
 from personal_assistant_agent.evaluation.dataset import DEFAULT_CASES, examples
 from personal_assistant_agent.evaluation.evaluators import project_assertions
 from personal_assistant_agent.services.chat import ChatService
@@ -225,3 +227,104 @@ def test_case_success_cannot_override_native_trace_delivery_failure(tmp_path, mo
         assert set(report["trace_delivery"]["missing_target_runs"]) == set(ids)
     assert len(calls) == (0 if failure == "early" else 2)
     shared.close.assert_called_once_with(timeout=0)
+
+
+def test_native_sdk_local_recording_runs_real_graph_without_langsmith_requests(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(runner, "ROOT", tmp_path)
+    monkeypatch.setattr(scenarios, "ROOT", tmp_path)
+    monkeypatch.setattr(
+        runner.subprocess,
+        "check_output",
+        lambda command, **kwargs: "base" if "HEAD" in command else "",
+    )
+    records = [
+        r
+        for r in examples()[0]
+        if r["metadata"]["case_id"] in {"arithmetic-product", "format-translation"}
+    ]
+    monkeypatch.setattr(runner, "examples", lambda path: (records, "synthetic-suite"))
+    monkeypatch.setattr(
+        runner, "get_settings", lambda: Settings(model_name="qwen3.8-flash", api_key="synthetic")
+    )
+    cloud_calls = []
+
+    def no_cloud(*args, **kwargs):
+        cloud_calls.append(args)
+        raise AssertionError("Local SDK recording must not access LangSmith")
+
+    monkeypatch.setattr(requests.Session, "request", no_cloud)
+    monkeypatch.setattr(runner, "check_trace_ingestion", no_cloud)
+    monkeypatch.setattr(runner, "sync_dataset", no_cloud)
+    monkeypatch.setattr(runner, "missing_trace_runs", no_cloud)
+    model_calls = []
+    grader_calls = []
+
+    async def stream(self, messages, **kwargs):
+        model_calls.append(messages)
+        user = next(m for m in reversed(messages) if m.type == "human")
+        if "翻译" in str(user.content):
+            yield ChatGenerationChunk(message=AIMessageChunk(content="Hello, world!"))
+            return
+        done = any(isinstance(m, ToolMessage) and m.name == "calculate" for m in messages)
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                content="391" if done else "",
+                tool_calls=[]
+                if done
+                else [{"name": "calculate", "id": "product", "args": {"expression": "17*23"}}],
+            )
+        )
+
+    async def score(self, messages, **kwargs):
+        grader_calls.append(messages)
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "CorrectnessResult",
+                                "id": "score",
+                                "args": {
+                                    "score": 1,
+                                    "reasoning": "The answer matches the synthetic reference.",
+                                },
+                            }
+                        ],
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._astream", stream)
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", score)
+    previous = tmp_path / "artifacts/golden/latest.json"
+    previous.parent.mkdir(parents=True)
+    previous.write_text('{"cloud_gate_passed":false}')
+    args = SimpleNamespace(
+        cases=DEFAULT_CASES,
+        dataset="synthetic",
+        repeats=2,
+        concurrency=2,
+        timeout=180,
+        min_quality=0.8,
+        local=True,
+    )
+    assert asyncio.run(runner.run(args)) == 0
+    report = json.loads((tmp_path / "artifacts/golden/local-latest.json").read_text())
+    assert report["gate"] == {"scope": "local_behavior", "passed": True, "reasons": []}
+    assert report["recording"] == "local" and report["passed"] == report["total"] == 4
+    assert report["cloud_validation_passed"] is False
+    assert report["trace_delivery"]["requested"] is False
+    assert json.loads(previous.read_text()) == {"cloud_gate_passed": False}
+    assert len(model_calls) == 6 and len(grader_calls) == 2
+    assert cloud_calls == []
+    assert all(
+        row["turns"][0]["tools"] == ["calculate"]
+        for row in report["rows"]
+        if row["id"] == "arithmetic-product"
+    )

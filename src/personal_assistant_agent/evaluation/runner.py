@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import truststore
 from langsmith import Client, aevaluate, tracing_context
+from langsmith.schemas import Example
 from openevals.prompts import CORRECTNESS_PROMPT
 
 from personal_assistant_agent.core.config import get_settings
@@ -45,7 +46,7 @@ QUALITY_FLOOR = 0.8
 
 def result_row(item, *, min_quality=QUALITY_FLOOR):
     case = Case.model_validate(item["example"].inputs["case"])
-    observation = item["run"].outputs
+    observation = item["run"].outputs if item["run"] is not None else None
     if not observation:
         observation = {"repeat": 0, "error": "target_failed", "turns": [], "workspace": ""}
     row = assess(case, observation)
@@ -73,7 +74,7 @@ def result_row(item, *, min_quality=QUALITY_FLOOR):
         if "judge_error" in feedback:
             row["error"] = feedback["judge_error"].value
             row["failures"].append("execution_error")
-    row["run_id"] = str(item["run"].id)
+    row["run_id"] = str(item["run"].id) if item["run"] is not None else None
     return finalize_row(row)
 
 
@@ -83,17 +84,26 @@ async def run(args):
     if not records:
         raise ValueError("No selected scenarios")
     settings = get_settings()
-    if not settings.model_configured or not settings.langsmith_api_key:
-        raise ValueError("Live evaluation requires DASHSCOPE_API_KEY and LANGSMITH_API_KEY")
+    local_recording = getattr(args, "local", False)
+    if not settings.model_configured or (not local_recording and not settings.langsmith_api_key):
+        raise ValueError(
+            "Live evaluation requires DASHSCOPE_API_KEY"
+            + (" and LANGSMITH_API_KEY" if not local_recording else "")
+        )
     if settings.model_name != "qwen3.8-flash":
         raise ValueError("This evaluation profile requires MODEL_NAME=qwen3.8-flash")
-    settings = replace(settings, tracing_enabled=True)
+    settings = replace(
+        settings,
+        tracing_enabled=not local_recording,
+        prompt_ref="" if local_recording else settings.prompt_ref,
+    )
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:6]
     output = ROOT / "artifacts/golden" / stamp
     output.mkdir(parents=True, mode=0o700)
     (output / "cases.snapshot.json").write_bytes(args.cases.read_bytes())
     try:
-        await asyncio.to_thread(check_trace_ingestion, settings)
+        if not local_recording:
+            await asyncio.to_thread(check_trace_ingestion, settings)
     except Exception as error:
         reason = (
             "langsmith_monthly_trace_limit"
@@ -124,13 +134,25 @@ async def run(args):
     ingestion_errors = []
     try:
         client = Client(
-            api_key=settings.langsmith_api_key,
-            api_url=settings.langsmith_endpoint,
+            api_key=settings.langsmith_api_key if not local_recording else None,
+            api_url=settings.langsmith_endpoint if not local_recording else "http://localhost",
+            auto_batch_tracing=not local_recording,
+            # The pinned SDK forces target tracing on even with upload_results=False.
+            # Export sampling affects traces only; every dataset case still runs.
+            tracing_sampling_rate=0 if local_recording else 1,
             timeout_ms=15000,
             tracing_error_callback=lambda error: ingestion_errors.append(type(error).__name__),
         )
-        dataset, _, _ = await asyncio.to_thread(sync_dataset, client, args.cases, args.dataset)
-        data, dataset_id = dataset.name, str(dataset.id)
+        if local_recording:
+            dataset_uuid = uuid4()
+            data = [
+                Example(id=uuid4(), dataset_id=dataset_uuid, created_at=datetime.now(UTC), **record)
+                for record in records
+            ]
+            dataset_id = str(dataset_uuid)
+        else:
+            dataset, _, _ = await asyncio.to_thread(sync_dataset, client, args.cases, args.dataset)
+            data, dataset_id = dataset.name, str(dataset.id)
         prompt = await asyncio.to_thread(load_prompt, settings)
         scenario = ScenarioTarget(
             settings, prompt, output, timeout=args.timeout, trace_client=client
@@ -146,6 +168,7 @@ async def run(args):
             make_quality_evaluator(settings, trace_errors=ingestion_errors),
         ]
         metadata = {
+            "recording": "local" if local_recording else "cloud",
             "model": settings.model_name,
             "judge_model": settings.model_name,
             "judge_temperature": 0,
@@ -174,7 +197,7 @@ async def run(args):
             "revision": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
             "dirty": bool(subprocess.check_output(["git", "status", "--porcelain"], text=True)),
         }
-        with tracing_context(enabled=True, client=client):
+        with tracing_context(enabled=not local_recording, client=client):
             results = await aevaluate(
                 target,
                 data=data,
@@ -184,7 +207,7 @@ async def run(args):
                 metadata=metadata,
                 max_concurrency=args.concurrency,
                 num_repetitions=args.repeats,
-                upload_results=True,
+                upload_results=not local_recording,
                 blocking=False,
             )
             rows = []
@@ -199,11 +222,13 @@ async def run(args):
                     + ",".join(row["failures"]),
                     flush=True,
                 )
-        await asyncio.to_thread(client.flush, timeout=15)
+        missing_runs = []
         try:
-            missing_runs = await asyncio.to_thread(
-                missing_trace_runs, client, [row["run_id"] for row in rows]
-            )
+            if not local_recording:
+                await asyncio.to_thread(client.flush, timeout=15)
+                missing_runs = await asyncio.to_thread(
+                    missing_trace_runs, client, [row["run_id"] for row in rows if row["run_id"]]
+                )
         except Exception as error:
             ingestion_errors.append(type(error).__name__)
             missing_runs = [row["run_id"] for row in rows]
@@ -217,6 +242,7 @@ async def run(args):
             if r["critical"] and not r["passed"]
         ]
         passed = sum(r["passed"] for r in rows)
+        targets_without_run = sum(row["run_id"] is None for row in rows)
         report = {
             **metadata,
             "created_at": datetime.now(UTC).isoformat(),
@@ -231,19 +257,27 @@ async def run(args):
             "total": len(rows),
             "min_quality": args.min_quality,
             "gate": {
+                "scope": "local_behavior" if local_recording else "cloud_release",
                 "passed": complete
                 and passed == len(expected)
                 and not ingestion_errors
-                and not missing_runs,
+                and not missing_runs
+                and not targets_without_run,
                 "reasons": ([] if complete else ["incomplete_coverage"])
                 + ([] if not critical else ["critical_failure"])
                 + ([] if passed == len(expected) else ["case_failure"])
                 + ([] if not ingestion_errors else ["trace_ingestion_failed"])
-                + ([] if not missing_runs else ["trace_delivery_incomplete"]),
+                + (
+                    []
+                    if not missing_runs and not targets_without_run
+                    else ["trace_delivery_incomplete"]
+                ),
             },
             "trace_delivery": {
+                "requested": not local_recording,
                 "errors": sorted(set(ingestion_errors)),
                 "missing_target_runs": missing_runs,
+                "targets_without_run": targets_without_run,
             },
             "critical_failures": critical,
             "judge_format_retries": sum(r.get("judge_format_retries", 0) for r in rows),
@@ -251,13 +285,21 @@ async def run(args):
             "legacy_baseline": "Retained unchanged; old judge scores are not interchangeable "
             "with the OpenEvals profile. Compare compatible experiments in LangSmith.",
         }
-        for path in (output / "report.json", ROOT / "artifacts/golden/latest.json"):
+        report["cloud_validation_passed"] = not local_recording and report["gate"]["passed"]
+        latest = "local-latest.json" if local_recording else "latest.json"
+        for path in (output / "report.json", ROOT / "artifacts/golden" / latest):
             path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
             path.chmod(0o600)
         print(f"Passed {passed}/{len(expected)}; experiment: {results.experiment_name}")
         print("Report:", output / "report.json")
         print("Critical failures:", len(critical))
-        print("Trace delivery:", "incomplete" if ingestion_errors or missing_runs else "confirmed")
+        print("Recording:", metadata["recording"])
+        print(
+            "Trace delivery:",
+            "not requested"
+            if local_recording
+            else ("incomplete" if ingestion_errors or missing_runs else "confirmed"),
+        )
         return 0 if report["gate"]["passed"] else 1
     finally:
         if client:
@@ -270,6 +312,11 @@ def main():
     parser.add_argument("--dataset", default=DEFAULT_DATASET)
     parser.add_argument("--offline", action="store_true")
     parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Run real models with native SDK local recording; does not validate cloud delivery",
+    )
+    parser.add_argument(
         "--judge",
         action="store_true",
         help="Compatibility flag; live evaluation always includes quality scoring",
@@ -279,6 +326,8 @@ def main():
     parser.add_argument("--concurrency", type=int, default=2)
     parser.add_argument("--timeout", type=float, default=180)
     args = parser.parse_args()
+    if args.offline and args.local:
+        parser.error("--offline is network-free; --local runs real models. Choose one.")
     if (
         not 1 <= args.repeats <= 10
         or not 1 <= args.concurrency <= 4

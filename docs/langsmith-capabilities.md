@@ -31,9 +31,19 @@ personal-assistant-system:5e18c4c5f0157b4e6acabe59475fc77350be93bf399483c8323a59
 
 ```bash
 make agent-check    # pytest、前端、Ruff，再运行真实模型实验
-make golden         # 仅真实模型实验，122次场景检查
+make golden         # 真实模型实验并上传LangSmith，122次场景检查
+make golden-local   # 真实Qwen模型，本地记录；不上传LangSmith
 make golden-offline # 17条边界场景各运行两次，无网络
 ```
+
+`golden-local` 显式使用官方 `aevaluate(upload_results=False)`，用例、两次重复、断言与0.8阈值保持一致。
+它仍调用付费Qwen API，使用仓库本地提示词；不读写LangSmith云端，不需要LangSmith Key。
+锁定SDK将此接口标为beta，且目标包装仍强制开启trace；本地Client因此配置官方导出采样率0，
+只关闭追踪导出，不减少任何用例或评分。真实SDK＋真实Graph＋可控模型/计算工具测试禁止网络访问，
+确认目标和OpenEvals裁判均不访问LangSmith、全部样例仍运行。
+本地结果保存为 `artifacts/golden/local-latest.json`，`gate.scope=local_behavior`，
+`cloud_validation_passed=false`；云端 `latest.json` 不被覆盖。
+`make agent-check` 和CI仍默认执行云端门禁，额度失败不会自动回退成本地通过。
 
 复现CI的默认窗口配置（密钥仍从受保护环境或本机.env读取）：
 
@@ -55,7 +65,7 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 项目仍保留工具授权、真实文件、待办、交付格式等业务断言，以及独立的真实 Graph 并发与进程恢复测试。
 接入 LangSmith 不会自动生成这些业务正确性标准。
 
-运行真实实验前，官方SDK同步写入一条仅含合成数据的已结束探针，确认追踪写入可用；
+运行云端记录实验前，官方SDK同步写入一条仅含合成数据的已结束探针，确认追踪写入可用；
 预检拒绝时保存not_started报告、退出失败，不调用场景或裁判模型。
 目标执行、CostTracer及实验复用同一Client；场景不回收共享Client。
 官方tracing_error_callback一旦报告上传错误，后续目标和评分停止模型调用；在途请求可先结束。
@@ -66,20 +76,23 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 关键失败单独列出，执行或裁判错误、缺失反馈及不完整覆盖均失败。模型裁判可能误判，仍需人工复核。
 历史基线原样保留，不用另一评分器的分数覆盖；在 LangSmith 内比较评分配置一致的实验。
 实验记录包含模型、评分器版本和提示词哈希、用例哈希、Agent源码哈希、执行窗口/输出和调用预算/超时配置、Git revision及未提交标记。
-本地完整报告与合成工作区位于忽略的 `artifacts/golden/`，最新摘要为 `latest.json`。
+报告与合成工作区位于忽略的 `artifacts/golden/`；云端最新摘要为 `latest.json`，本地记录为 `local-latest.json`。
 
 只保留 `.github/workflows/agent-regression.yml`，免费检查后执行真实模型实验，
-不再重复运行另一套10条用例流程。真实评测依赖 `golden-evaluation` 环境中的
+不再重复运行另一套10条用例流程。云端记录评测依赖 `golden-evaluation` 环境中的
 `DASHSCOPE_API_KEY`、`LANGSMITH_API_KEY`；托管提示词可配置固定版本 `LANGSMITH_PROMPT_REF`。
 缺少配置明确失败；报告在失败时仍上传。`--judge` 为兼容选项，正式实验始终启用质量评分。
 
 2026-11-03 历史版本本地检查通过：459项Python、17项Node、Ruff，真实场景122/122，关键失败0。
 [历史实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=711831f6-1005-449b-91c7-f82a3eb9191e) 为 `personal-assistant-golden-91dfc2d1`；
-最新候选已完整执行make agent-check：502项Python、17项Node、Ruff通过；
-真实同步写入预检收到LangSmithRateLimitError，场景和裁判调用均为0，关键检查未执行，整体失败。
-报告：`artifacts/golden/20261103T011454Z-44596e/preflight.json`。
-提示词已补充文件缺失说明；裁判输入补齐既有整轮凭据拒绝边界，普通安全讨论/公开文本转换仍正常处理。
-这两项候选修复尚未在线验收；旧有效0.7分不覆盖，用例、baseline与0.8门槛不变。
+最新候选：504项Python、17项Node、Ruff通过；make golden-local完成真实Qwen3.8-Flash
+场景122/122、关键失败0，旧两项失败场景各两轮质量1.0，程序断言均通过。
+本地报告：`artifacts/golden/20261103T012556Z-28c687/report.json`；scope=local_behavior，
+cloud_validation_passed=false。用例、baseline、两次重复及0.8门槛不变，历史低分不覆盖。
+make agent-check的云端预检仍收到LangSmithRateLimitError，场景及裁判调用0、关键检查未执行，
+云端门禁失败：`artifacts/golden/20261103T012846Z-45a9f4/preflight.json`。
+此前cb9899c的[CI 41558745379](https://github.com/dezhiguan/personal_assistant_agent/actions/runs/41558745379)
+已验证502项Python/17项Node/Ruff通过，云端预检同样被额度阻断，未执行模型场景。
 历史本地489项Python与122/122场景通过仅适用于对应旧源码，报告仍保留在
 `artifacts/golden/20261102T235639Z-8acef6/report.json`，不能替代当前候选。
 源码指纹核验、完整日志与先前中止记录位于 `artifacts/ci/native-evaluation/`。
@@ -88,7 +101,7 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 日志另有310处LangSmith月度唯一trace额度耗尽的HTTP429；平台追踪与反馈不完整。
 CI完整报告位于 `artifacts/ci/run-41549920451-attempt-1/golden-report/latest.json`。
 该CI已自行结束，取消请求未执行；不能根据平台未更新的span推断Graph卡死。
-额度恢复前停止在线重跑，未购买订阅、提高付费额度或关闭追踪绕过限制。
+云端额度未恢复时保持预检失败；显式本地记录只验收模型行为，不代替云端接入验证。未开通按量计费或升级订阅。
 云托管与GitHub Actions结果应分别核验，不能由本地评估代替。
 
 ## Token 与费用

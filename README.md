@@ -88,7 +88,7 @@ uv run python scripts/evaluate_agent.py --judge
 
 服务使用 `.env` 中固定到提交哈希的 `LANGSMITH_PROMPT_REF`，更新后需重启。启动服务后执行 `uv run python scripts/verify_usage.py --planning`，核对真实 Token 与 LangSmith 汇总费用。金额为版本化标价估算，不是百炼账单。
 
-完整配置、报告位置、工作流启用条件与部署限制见 [LangSmith 接入与验收](docs/langsmith-capabilities.md)。GitHub Actions 随代码发布：常规测试自动执行；真实评测需要 golden-evaluation 环境 Secrets，缺少时明确失败。LangSmith 云托管受账号 Plus 套餐限制，尚未开通付费资源。
+完整配置、报告位置、工作流启用条件与部署限制见 [LangSmith 接入与验收](docs/langsmith-capabilities.md)。GitHub Actions 随代码发布：常规测试自动执行；云端记录评测需要 golden-evaluation 环境 Secrets，缺少时明确失败。LangSmith 云托管受账号 Plus 套餐限制，尚未开通付费资源。
 
 前端排版使用本地打包的 Marked 与 DOMPurify，依赖版本、完整性校验和许可保存在 `static/vendor/`，浏览器运行时不依赖外部 CDN。
 
@@ -310,12 +310,13 @@ docker run --rm --env-file .env -p 127.0.0.1:8000:8000 \
 
 ## 多维度黄金集与回归门禁
 
-2026-11-03 最新候选已执行 `make agent-check`：502项 Python、17项前端、Ruff通过；
-LangSmith月度trace额度耗尽，写入预检阻断，场景和裁判调用均为0，关键检查未执行，整体门禁未通过。
-预检报告：`artifacts/golden/20261103T011454Z-44596e/preflight.json`。
-历史本地122/122和[aca170d的CI 120/122、关键失败2次](https://github.com/dezhiguan/personal_assistant_agent/actions/runs/41549920451)
-均保留；[实现与验收记录](docs/design/full-duplex-agent-interaction.html#implementation)包含候选修复及剩余限制。
-用例、历史基线和0.8阈值未修改；当前候选仍需额度恢复后完成在线验收。
+2026-11-03 最新候选：504项 Python、17项前端、Ruff通过；
+`make golden-local` 使用真实Qwen3.8-Flash完成122/122，本地行为验收通过、关键失败0，
+此前两项失败场景各两轮均通过。报告：`artifacts/golden/20261103T012556Z-28c687/report.json`。
+`make agent-check` 的云端写入预检仍因LangSmith月度trace额度耗尽而失败：场景和裁判调用为0，
+云端关键检查未执行。本地记录不覆盖云端报告，不代表云端发布验收完成。
+[实现与完整历史记录](docs/design/full-duplex-agent-interaction.html#implementation)保留此前CI失败；
+用例、基线和0.8阈值未改。
 
 黄金集位于 `evaluations/golden/cases.json`，目前包含 **61条用例、12个维度**：
 
@@ -345,6 +346,8 @@ make agent-check
 
 ```bash
 make golden
+# 真实Qwen模型，仅本地记录，不消耗LangSmith追踪额度（仍有模型API费用）
+make golden-local
 # 只跑无需模型和密钥的17条边界用例
 make golden-offline
 ```

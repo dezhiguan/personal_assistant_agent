@@ -62,6 +62,14 @@ def test_missing_assertion_feedback_is_blocking():
     assert result_row(item)["error"] == "missing_evaluator_feedback"
 
 
+def test_sdk_target_without_run_is_reported_as_failure():
+    item = native_result()
+    item["run"] = None
+    row = result_row(item)
+    assert not row["passed"] and row["run_id"] is None
+    assert "execution_error" in row["failures"]
+
+
 def test_trace_failure_stops_paid_judging(monkeypatch):
     scorer = MagicMock(side_effect=AssertionError("Do not spend tokens after ingestion failure"))
     monkeypatch.setattr(evaluators, "create_async_llm_as_judge", lambda **kwargs: scorer)
