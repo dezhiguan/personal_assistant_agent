@@ -1055,3 +1055,118 @@ def test_ordinary_reply_can_discuss_completed_results_without_task_execution_sta
             await runtime.close()
 
     asyncio.run(check())
+
+
+def test_complex_news_requirements_do_not_use_lossy_fast_path(tmp_path):
+    router = MessageRouter(settings_for(tmp_path))
+    assert router.quick_route("帮我搜索全球新闻", [], [], None, None)["intent"] == "NEW_TASK"
+    assert (
+        router.quick_route(
+            "搜索最近三天国内科技新闻，分四类，每类两条，附来源链接", [], [], "NEW_TASK", None
+        )
+        is None
+    )
+    tasks = [{"id": "a", "goal": "搜索新闻", "status": "RUNNING"}]
+    assert router.quick_route("只看科技，至少十条并附链接", tasks, [], None, None) is None
+    assert router.quick_route("继续", tasks, [], None, None)["intent"] == "RESUME"
+
+
+def test_router_accepts_null_unused_fields_without_erasing_condition_deletions():
+    from personal_assistant_agent.interaction.routing import Decision
+
+    parsed = Decision.model_validate(
+        {
+            "intent": "CHAT",
+            "goal": None,
+            "constraints": None,
+            "changes": None,
+            "question": None,
+            "candidates": None,
+        }
+    )
+    assert parsed.goal == "" and parsed.constraints == {} and parsed.candidates == []
+    steer = Decision.model_validate({"intent": "STEER", "changes": {"时间": None}})
+    assert steer.changes == {"时间": None}
+
+
+def test_news_goal_and_aliases_cannot_keep_conflicting_old_requirements(tmp_path):
+    from personal_assistant_agent.interaction.store import TaskStore
+
+    store = TaskStore(str(tmp_path / "canonical"))
+    try:
+        cid, mid = str(uuid4()), str(uuid4())
+        original = "搜索全球科技新闻，分十类，每类两条，附日期和来源链接"
+        tid = store.receive(
+            cid,
+            mid,
+            original,
+            {
+                "intent": "NEW_TASK",
+                "goal": "搜索全球科技新闻",
+                "constraints": {
+                    "分类数量": "十类",
+                    "每类结果数": "两条",
+                    "输出要求": "附日期和来源链接",
+                },
+            },
+            {},
+        )["task_id"]
+        store.control(
+            tid,
+            cid,
+            str(uuid4()),
+            "STEER",
+            content="改为国内最近三天",
+            changes={"地域": "中国大陆", "时间范围": "最近三天"},
+        )
+        task = store.task(tid)
+        assert task["goal"] == "搜索新闻"
+        assert task["constraints"] == {
+            "范围": "中国大陆",
+            "主题": "科技",
+            "时间": "最近三天",
+            "分类数量": "十类",
+            "每类结果数": "两条",
+            "输出要求": "附日期和来源链接",
+        }
+        assert "全球" not in task["effective_task_request"]
+        assert task["original_request"] == original
+        assert store.messages(cid)[0]["content"] == original
+        store.finish(tid, task["revision"], "原成果")
+        revised = store.receive(
+            cid,
+            str(uuid4()),
+            "改成最近一周",
+            {"intent": "STEER", "target_task_id": tid, "changes": {"时间范围": "最近一周"}},
+            {},
+        )
+        new_task = store.task(revised["task_id"])
+        assert new_task["source_task_id"] == tid and store.task(tid)["result"] == "原成果"
+        assert new_task["constraints"]["时间"] == "最近一周"
+        assert new_task["constraints"]["范围"] == "中国大陆"
+    finally:
+        store.db.close()
+
+
+def test_router_preserves_structured_conditions_and_explicit_deletions():
+    from personal_assistant_agent.interaction.routing import Decision
+
+    parsed = Decision.model_validate(
+        {
+            "intent": "NEW_TASK",
+            "constraints": {
+                "categories": ["芯片", "人工智能", "航天", "生物科技"],
+                "min_items_per_category": 2,
+                "required_fields": ["日期", "来源", "链接"],
+                "deduplication": True,
+            },
+        }
+    )
+    import json
+
+    assert json.loads(parsed.constraints["categories"]) == ["芯片", "人工智能", "航天", "生物科技"]
+    assert parsed.constraints["min_items_per_category"] == "2"
+    assert parsed.constraints["deduplication"] == "true"
+    assert Decision.model_validate({"intent": "STEER", "changes": {"时间": None}}).changes == {
+        "时间": None
+    }

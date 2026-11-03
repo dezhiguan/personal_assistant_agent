@@ -7,6 +7,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from personal_assistant_agent.interaction.routing import (
+    canonical_news_constraints,
+    normalize_news_task,
+)
+
 TERMINAL = {"SUCCEEDED", "FAILED", "CANCELLED"}
 ACTIVE = {"RUNNING", "PAUSING", "CANCELLING"}
 
@@ -48,6 +53,8 @@ class TaskStore:
             CREATE INDEX IF NOT EXISTS events_conversation ON events(conversation, seq);
             CREATE INDEX IF NOT EXISTS messages_conversation ON messages(conversation, seq);
             CREATE INDEX IF NOT EXISTS controls_task ON controls(task, seq);
+            CREATE TABLE IF NOT EXISTS chat_retries(
+                id TEXT PRIMARY KEY, conversation TEXT, message TEXT);
             PRAGMA user_version=1;
         """)
         # SQLite creates WAL/SHM next to the database; the enclosing directory is private.
@@ -74,7 +81,40 @@ class TaskStore:
             "SELECT data FROM tasks" + (" WHERE conversation=?" if conversation else ""),
             (conversation,) if conversation else (),
         )
-        return [json.loads(row[0]) for row in rows]
+        return sorted((json.loads(row[0]) for row in rows), key=lambda t: t["created_at"])
+
+    def retry_chat(self, conversation, message_id, retry_id, *, queue_limit=32):
+        with self.transaction():
+            prior = self.db.execute("SELECT * FROM chat_retries WHERE id=?", (retry_id,)).fetchone()
+            if prior and (prior["conversation"] != conversation or prior["message"] != message_id):
+                raise Conflict("重试编号已用于其他消息。")
+            row = self.db.execute(
+                "SELECT * FROM messages WHERE id=? AND conversation=?", (message_id, conversation)
+            ).fetchone()
+            if not row:
+                return {"received": False}
+            if row["kind"] != "CHAT" or row["role"] != "user":
+                raise Conflict("只能重试失败的普通聊天；任务请通过关联原成果继续。")
+            receipt = json.loads(row["response"])
+            if prior:
+                return {"received": True, "pending": receipt.get("pending", False)}
+            if receipt.get("pending") or not receipt.get("error"):
+                raise Conflict("本条回复仍在进行或已成功，无需重试。")
+            waiting = sum(
+                m["role"] == "user" and bool(json.loads(m["response"]).get("pending"))
+                for m in self.messages(conversation, "CHAT")
+            )
+            if waiting >= queue_limit:
+                raise Conflict("聊天回复队列已满，请稍后重试。")
+            receipt.update(pending=True, error=None)
+            self.db.execute(
+                "UPDATE messages SET response=? WHERE id=?", (json.dumps(receipt), message_id)
+            )
+            self.db.execute(
+                "INSERT INTO chat_retries VALUES(?,?,?)", (retry_id, conversation, message_id)
+            )
+            self.event(conversation, "chat.retried", {}, chat=message_id)
+            return {"received": True, "pending": True}
 
     def save(self, task):
         self.db.execute(
@@ -185,6 +225,10 @@ class TaskStore:
                         },
                     }
                     response["revision_of"] = source_id
+                if "新闻" in (decision.get("goal") or ""):
+                    decision["goal"], decision["constraints"] = normalize_news_task(
+                        decision["goal"], decision.get("constraints", {})
+                    )
                 pending = [t for t in self.tasks() if t["status"] not in TERMINAL]
                 if len(pending) >= queue_limit:
                     raise Conflict("任务队列已满，请稍后提交。")
@@ -326,6 +370,11 @@ class TaskStore:
             ).fetchone()[0]
             if pending >= self.control_limit:
                 raise Conflict("任务修正队列已满；暂停、取消和状态查询仍可使用。")
+            if "新闻" in task["goal"]:
+                task["goal"], task["constraints"] = normalize_news_task(
+                    task["goal"], task["constraints"]
+                )
+                changes = canonical_news_constraints(changes)
             task.setdefault("constraint_sources", {}).update({k: control_id for k in changes})
             if changes.get("目标"):
                 task["goal"] = changes["目标"]
@@ -479,9 +528,20 @@ class TaskStore:
 
 
 def effective(task):
+    def display(value):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return value
+        if isinstance(parsed, list):
+            return "、".join(str(item) for item in parsed)
+        if isinstance(parsed, bool):
+            return "是" if parsed else "否"
+        return value
+
     return task["goal"] + (
         "\n当前要求："
-        + "；".join(f"{k}={v}" for k, v in task["constraints"].items() if v is not None)
+        + "；".join(f"{k}={display(v)}" for k, v in task["constraints"].items() if v is not None)
         if task["constraints"]
         else ""
     )

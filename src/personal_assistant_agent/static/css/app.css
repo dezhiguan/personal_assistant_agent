@@ -287,9 +287,3 @@ textarea::placeholder { color: #a4a7af; }
 }
 
 /* Task cards stay separate from the always-available composer. */
-.duplex-tasks{display:flex;gap:12px;overflow:auto;max-height:210px;margin:0 0 12px;padding:2px}
-.duplex-task{flex:0 0 min(340px,85vw);border:1px solid var(--line,#ddd);border-left:3px solid #496c59;border-radius:12px;padding:14px;background:var(--surface,#fff);font-size:12px;line-height:1.65}
-.duplex-task strong{display:block;font-size:13px}.duplex-status{color:#496c59}.duplex-task p{margin:6px 0;white-space:pre-wrap}.duplex-task small{display:block;color:#72786d}
-.duplex-task button{background:transparent;border:1px solid #cbd3c7;border-radius:6px;padding:4px 12px;margin:9px 8px 0 0;cursor:pointer}.duplex-task button:disabled{opacity:.5}
-.message-mode{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:11px;color:#72786d}.message-mode select{max-width:280px;border:1px solid #d8ddd3;border-radius:6px;padding:5px;background:transparent;color:inherit}
-.duplex-tasks[hidden]{display:none}

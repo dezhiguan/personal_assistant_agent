@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 from typing import Literal
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from personal_assistant_agent.interaction.store import Conflict
 
 router = APIRouter(prefix="/api", tags=["interaction"])
+logger = logging.getLogger(__name__)
 
 
 class MessageInput(BaseModel):
@@ -31,6 +33,11 @@ class ControlInput(BaseModel):
     type: Literal["STEER", "PAUSE", "RESUME", "CANCEL"]
     content: str = Field(default="", max_length=8000)
     expected_revision: int | None = Field(default=None, ge=0)
+
+
+class RetryInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    retry_id: UUID
 
 
 def runtime(request):
@@ -53,6 +60,8 @@ async def submit(conversation: UUID, payload: MessageInput, request: Request):
     try:
         return await runtime(request).submit(str(conversation), payload.model_dump(mode="json"))
     except Exception as error:
+        # Error bodies may contain user input or provider secrets; log the type only.
+        logger.warning("Message submission failed: %s", type(error).__name__)
         raise translate(error) from None
 
 
@@ -116,6 +125,24 @@ async def stop_chat(conversation: UUID, message_id: UUID, request: Request):
         runtime(request).stop_chat(str(conversation), str(message_id))
         return {"status": "RECEIVED"}
     except Conflict as error:
+        raise translate(error) from None
+
+
+@router.post("/conversations/{conversation}/chats/{message_id}/retry", status_code=202)
+async def retry_chat(conversation: UUID, message_id: UUID, payload: RetryInput, request: Request):
+    service = runtime(request)
+    try:
+        if service.persistence_fault:
+            raise RuntimeError("任务持久化不可用。")
+        result = service.store.retry_chat(
+            str(conversation),
+            str(message_id),
+            str(payload.retry_id),
+            queue_limit=service.settings.interaction_queue_limit,
+        )
+        service.wakeup.set()
+        return result
+    except Exception as error:
         raise translate(error) from None
 
 

@@ -152,3 +152,30 @@ def test_control_and_status_latency_without_model_or_task_slots(client):
         durations["status"].append((time.perf_counter() - start) * 1000)
     p95 = {name: sorted(samples)[18] for name, samples in durations.items()}
     assert all(value < 300 for value in p95.values()), p95
+
+
+def test_failed_chat_retry_is_scoped_idempotent_and_preserves_original(client):
+    runtime = client.app.state.interaction
+    cid, mid, retry = (str(uuid4()) for _ in range(3))
+
+    def check():
+        runtime.store.receive(cid, mid, "验收问题", {"intent": "CHAT"}, {})
+        runtime.complete_chat(cid, mid, "", "服务重启，本条回复已中止。")
+        store = runtime.store
+        assert store.retry_chat(str(uuid4()), mid, retry) == {"received": False}
+        assert store.retry_chat(cid, mid, retry) == {"received": True, "pending": True}
+        assert store.retry_chat(cid, mid, retry) == {"received": True, "pending": True}
+        assert len([m for m in store.messages(cid) if m["role"] == "user"]) == 1
+        runtime.complete_chat(cid, mid, "重试后的真实回答")
+        assert store.retry_chat(cid, mid, retry) == {"received": True, "pending": False}
+        return store.messages(cid)
+
+    rows = client.portal.call(check)
+    assert rows[0]["content"] == "验收问题"
+    assert rows[1]["content"] == "重试后的真实回答"
+    assert (
+        client.post(
+            f"/api/conversations/{cid}/chats/{mid}/retry", json={"retry_id": str(uuid4())}
+        ).status_code
+        == 409
+    )

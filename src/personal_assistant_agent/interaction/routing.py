@@ -6,7 +6,7 @@ import re
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from personal_assistant_agent.agents.model import build_model
 
@@ -20,6 +20,36 @@ class Decision(BaseModel):
     question: str = ""
     candidates: list[str] = Field(default_factory=list)
 
+    @field_validator("constraints", "changes", mode="before")
+    @classmethod
+    def condition_values(cls, value):
+        if isinstance(value, dict):
+            return {
+                key: item
+                if isinstance(item, str) or item is None
+                else json.dumps(item, ensure_ascii=False)
+                for key, item in value.items()
+            }
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def unused_null_fields(cls, value):
+        # Qwen can explicitly emit null for unused optional response fields.
+        # Treat omission and null alike; preserve real condition deletions inside changes.
+        if isinstance(value, dict):
+            value = dict(value)
+            for key, default in {
+                "goal": "",
+                "question": "",
+                "constraints": {},
+                "changes": {},
+                "candidates": [],
+            }.items():
+                if value.get(key) is None:
+                    value[key] = default
+        return value
+
 
 def news_conditions(content):
     result = {}
@@ -32,6 +62,55 @@ def news_conditions(content):
         if text in content:
             result["主题"] = text
     return result
+
+
+def canonical_news_constraints(values):
+    aliases = {
+        "scope": "范围",
+        "region": "范围",
+        "time_range": "时间",
+        "topic": "主题",
+        "categories": "分类",
+        "min_items_per_category": "每类最少条数",
+        "required_fields": "必含信息",
+        "deduplication": "去重",
+        "post_process": "后续处理",
+        "地域": "范围",
+        "地域范围": "范围",
+        "地区": "范围",
+        "搜索范围": "范围",
+        "地理范围": "范围",
+        "时间范围": "时间",
+        "日期范围": "时间",
+        "时间窗口": "时间",
+        "新闻主题": "主题",
+        "新闻类型": "主题",
+        "领域": "主题",
+    }
+    return {aliases.get(key, key): value for key, value in values.items()}
+
+
+def normalize_news_task(goal, constraints):
+    if re.search(r"不要|不看|不搜|排除|除了|而非|以外|之外|非科技", goal):
+        return goal, canonical_news_constraints(constraints)
+    constraints = {**news_conditions(goal), **canonical_news_constraints(constraints)}
+    if not re.search(r"不要|不看|不搜|排除|除了|而非|非科技", goal):
+        for token in ["全球", "国内", "国际", "中国大陆", "科技", "财经", "体育", "政治", "娱乐"]:
+            goal = goal.replace(token, "")
+        goal = re.sub(r"最近[一二两三四五六七八九十\d]+[天周日月]", "", goal)
+    return goal, constraints
+
+
+def simple_news_message(content):
+    """Only bypass semantic routing when every phrase is understood here."""
+    return bool(
+        re.fullmatch(
+            r"(?:帮我|请|就|只|搜索|查找|搜集|查询|搜|查|看|要|一下|好了|改成|改为|换成|换为"
+            r"|限定|范围|最新|的|新闻|全球|国内|国际|科技|财经|体育|政治|娱乐"
+            r"|最近[一二两三四五六七八九十\d]+[天周日月]|[，,。！!？?\s])+",
+            content,
+        )
+    )
 
 
 class MessageRouter:
@@ -66,15 +145,19 @@ class MessageRouter:
         if complex_conditions and intent not in {"STATUS", "PAUSE", "RESUME", "CANCEL"}:
             return None
         if intent == "NEW_TASK":
-            if "新闻" in content:
+            if "新闻" in content and simple_news_message(content):
                 return {
                     "intent": "NEW_TASK",
                     "goal": "搜索新闻",
                     "constraints": news_conditions(content),
                 }
             return None
-        if control := re.fullmatch(r"(?:先)?(暂停|恢复|取消)(?:一下)?(?:任务)?[。！!\s]*", content):
-            kind = {"暂停": "PAUSE", "恢复": "RESUME", "取消": "CANCEL"}[control[1]]
+        if control := re.fullmatch(
+            r"(?:先)?(暂停|恢复|继续|取消)(?:一下)?(?:任务)?[。！!\s]*", content
+        ):
+            kind = {"暂停": "PAUSE", "恢复": "RESUME", "继续": "RESUME", "取消": "CANCEL"}[
+                control[1]
+            ]
             return self.target({"intent": kind}, tasks, target)
         # Definitions and conversational questions never become news constraints.
         question = bool(
@@ -92,7 +175,13 @@ class MessageRouter:
             r"|^(?:国内|国际|全球|科技|财经|体育|政治|娱乐)(?:的)?[。\s]*$",
             content,
         )
-        if not question and changes and steering_shape and ("新闻" in content or candidates):
+        if (
+            not question
+            and changes
+            and steering_shape
+            and simple_news_message(content)
+            and ("新闻" in content or candidates)
+        ):
             if not candidates and not target:
                 return {"intent": "NEW_TASK", "goal": "搜索新闻", "constraints": changes}
             if target:
@@ -170,6 +259,23 @@ STEER给出target_task_id和changes（仅明确变化的条件，键复用已有
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1].rsplit("```", 1)[0]
         decision = Decision.model_validate_json(raw).model_dump()
+        # Some otherwise valid model responses leave news scope/theme in goal
+        # instead of constraints. That would retain "全球" after a domestic steer.
+        # Canonicalize the understood dimensions while preserving the remaining action.
+        if decision["intent"] == "NEW_TASK" and "新闻" in decision["goal"]:
+            conditions = news_conditions(content)
+            if not re.search(r"不要|不看|不搜|排除|除了|而非", content) and all(
+                sum(word in content for word in group) <= 1
+                for group in [["全球", "国内", "国际"], ["科技", "财经", "体育", "政治", "娱乐"]]
+            ):
+                decision["constraints"].update(conditions)
+                decision["goal"], decision["constraints"] = normalize_news_task(
+                    decision["goal"], decision["constraints"]
+                )
+        if decision["intent"] == "STEER" and any(
+            t["id"] == decision["target_task_id"] and "新闻" in t["goal"] for t in tasks
+        ):
+            decision["changes"] = canonical_news_constraints(decision["changes"])
         if intent:
             decision["intent"] = intent
         if target:

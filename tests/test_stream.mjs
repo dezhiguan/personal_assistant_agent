@@ -252,3 +252,23 @@ test('an empty browser restores durable message and result order from the server
     duplex.disconnect();
   } finally { globalThis.EventSource = previous; }
 });
+
+test('task status describes actual tools and steps, without invented percentages', async () => {
+  const { describeTask } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const text = describeTask({ id: '12345678-other', goal: '整理新闻', status: 'PAUSING', revision: 2, applied_revision: 1,
+    progress: { todos: [{ content: '核验来源', status: 'in_progress' }, { content: '搜索', status: 'completed' }],
+      active_tools: { search: { name: 'baidu_search' } } } });
+  assert.match(text, /暂停中/); assert.match(text, /核验来源/); assert.match(text, /已完成 1 项/);
+  assert.match(text, /baidu_search/); assert.match(text, /等待安全边界/); assert.ok(!text.includes('%'));
+});
+
+test('tool completion clears a restored active tool and preserves parallel calls', async () => {
+  const { reduceEvent, describeTask } = await import('../src/personal_assistant_agent/static/js/duplex.js');
+  const session = { messages: [], tasks: { a: { id: 'a', goal: '新闻', status: 'RUNNING',
+    progress: { active_tools: { saved: { call_id: 'one', namespace: 'root', name: 'search' },
+      sibling: { call_id: 'one', namespace: 'child', name: 'read_file' } } } } } };
+  reduceEvent(session, { sequence: 1, type: 'tool.finished', task_id: 'a',
+    payload: { call_id: 'one', namespace: 'root', name: 'search' } });
+  assert.doesNotMatch(describeTask(session.tasks.a), /search/);
+  assert.match(describeTask(session.tasks.a), /read_file/);
+});

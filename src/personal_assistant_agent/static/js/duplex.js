@@ -15,6 +15,24 @@ export async function requestJSON(url, body) {
   return value;
 }
 
+export function describeTask(task) {
+  const progress = task.progress || {};
+  const todos = progress.todos || [];
+  const tools = Object.values(progress.active_tools || {}).map(t => t.name);
+  if (!tools.length && task.currentTool) tools.push(task.currentTool);
+  const lines = [`${task.goal} · ${task.id.slice(0, 8)}：${taskLabels[task.status] || task.status}`];
+  if (todos.length) {
+    lines.push(`已完成 ${todos.filter(t => t.status === 'completed').length} 项`);
+    const current = todos.filter(t => t.status === 'in_progress').map(t => t.content);
+    if (current.length) lines.push('当前步骤：' + current.join('；'));
+  }
+  if (tools.length) lines.push('正在调用：' + tools.join('、'));
+  if (task.reason || task.error?.message) lines.push(task.reason || task.error.message);
+  if (task.revision > task.applied_revision && !['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(task.status)) lines.push('最新要求等待安全边界应用');
+  else if (task.revision > 0) lines.push('最新要求已应用');
+  return lines.join('\n');
+}
+
 function answerFor(session, key) {
   let answer = session.messages.find(m => m.replyTo === key);
   if (!answer) {
@@ -32,6 +50,8 @@ export function reduceEvent(session, event, trace = () => {}) {
   if (['task.created', 'task.state_changed', 'task.result'].includes(event.type)) {
     const previous = session.tasks[event.task_id];
     session.tasks[event.task_id] = payload;
+    const statusAnswer = answerFor(session, `task:${event.task_id}`);
+    statusAnswer.taskId = event.task_id;
     const existing = session.messages.find(m => m.replyTo === `task:${event.task_id}`);
     if (payload.status === 'RUNNING' && existing && previous?.status !== 'RUNNING') {
       existing.state = 'streaming'; existing.text = '';
@@ -72,11 +92,15 @@ export function reduceEvent(session, event, trace = () => {}) {
     task.progress = { ...task.progress, todos: payload.todos };
     answerFor(session, `task:${event.task_id}`).todos = payload.todos;
   }
-  if (event.type === 'tool.started' && session.tasks[event.task_id]) {
-    session.tasks[event.task_id].currentTool = payload.name;
-  }
-  if (event.type === 'tool.finished' && session.tasks[event.task_id]) {
-    delete session.tasks[event.task_id].currentTool;
+  if (['tool.started', 'tool.finished'].includes(event.type) && session.tasks[event.task_id]) {
+    const task = session.tasks[event.task_id];
+    task.progress ||= {};
+    const active = task.progress.active_tools ||= {};
+    for (const [key, value] of Object.entries(active)) {
+      if (value.call_id === payload.call_id && JSON.stringify(value.namespace) === JSON.stringify(payload.namespace)) delete active[key];
+    }
+    if (event.type === 'tool.started') active[JSON.stringify([payload.namespace, payload.call_id])] = payload;
+    delete task.currentTool;
   }
   if (event.type === 'control.applied') {
     const task = session.tasks[event.task_id];
@@ -101,7 +125,12 @@ export function reduceEvent(session, event, trace = () => {}) {
       Object.assign(answer, { text: payload.text, state: payload.error ? 'error' : 'complete',
         error: payload.error });
       delete answer.toolProgress;
+      delete answer.retryId;
       endTrace(answer, answer.state);
+    }
+    if (event.type === 'chat.retried') {
+      Object.assign(answer, { text: '', state: 'streaming', acceptedIntent: 'CHAT' });
+      delete answer.error; delete answer.trace;
     }
   }
   return true;
@@ -162,7 +191,8 @@ export class Duplex {
         }
       }
       for (const task of snapshot.tasks) {
-        const taskAnswer = session.messages.find(m => m.replyTo === `task:${task.id}`);
+        const taskAnswer = answerFor(session, `task:${task.id}`);
+        taskAnswer.taskId = task.id;
         if (taskAnswer && ['RUNNING', 'QUEUED', 'PAUSING', 'CANCELLING'].includes(task.status)) {
           taskAnswer.state = 'streaming';
           if (taskAnswer.trace) taskAnswer.trace.state = 'running';
@@ -201,7 +231,8 @@ export class Duplex {
     else if (mode) payload.target_task_id = mode;
     try {
       const ack = await requestJSON(`/api/conversations/${session.id}/messages`, payload);
-      if (ack.intent === 'CHAT') return;
+      answer.acceptedIntent = ack.intent;
+      if (ack.intent === 'CHAT') { this.change(); return; }
       answer.state = 'complete';
       if (ack.intent === 'NEW_TASK') {
         answer.text = ack.revision_of ? '已创建关联原成果的修订任务。' : '任务已接收，后台执行期间可以继续聊天或补充要求。';
@@ -209,11 +240,12 @@ export class Duplex {
       } else if (ack.intent === 'STEER') {
         answer.text = `修正已收到，等待安全执行边界应用。\n\n当前接受的要求：${ack.effective_task_request}`;
       } else if (ack.intent === 'CLARIFY') {
-        answer.text = ack.question;
-        answer.candidates = ack.candidates;
+        answer.text = ack.question + (ack.candidates?.length ? '\n\n' + ack.candidates.map((id, i) =>
+          `${i + 1}. ${session.tasks?.[id]?.goal || '任务'} · ${id.slice(0, 8)}`).join('\n')
+          + '\n\n请直接回复任务名称或编号。' : '');
       } else if (ack.intent === 'STATUS') {
-        answer.text = ack.tasks.map(t => `${t.goal}：${taskLabels[t.status] || t.status}`).join('\n\n') || '当前没有任务。';
-      } else answer.text = '控制指令已收到，实际状态见任务卡片。';
+        answer.text = ack.tasks.map(describeTask).join('\n\n') || '当前没有任务。';
+      } else answer.text = '控制指令已收到，等待安全执行边界确认；任务状态会在对话中更新。';
       this.change();
     } catch (error) {
       Object.assign(answer, { state: 'error', error: error.message });

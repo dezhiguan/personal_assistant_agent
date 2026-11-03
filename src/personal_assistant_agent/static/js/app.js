@@ -1,4 +1,4 @@
-import { Duplex, requestJSON, taskLabels } from './duplex.js';
+import { Duplex, requestJSON, describeTask } from './duplex.js?v=4';
 import { getStatus, streamChat } from './api.js';
 import { renderMarkdown } from './markdown.js';
 import { latestTodos, normalizeTodos, renderPlan } from './planning.js';
@@ -14,7 +14,7 @@ let tracingEnabled = false;
 const timeline = new TimelinePanel();
 const duplex = new Duplex(error => {
   if (error) toast(error);
-  persist(); renderMessages(); renderTasks();
+  persist(); renderMessages();
 }, applyTraceEvent);
 
 function showTimeline() {
@@ -125,7 +125,7 @@ function thinkingTime(message) {
   return Number.isFinite(ms) ? `已等待 ${(ms / 1000).toFixed(1)} 秒` : '';
 }
 
-function thinking(message) {
+function thinking(message, queued = false) {
   const wrapper = document.createElement('div');
   wrapper.className = 'thinking';
   wrapper.setAttribute('role', 'status');
@@ -133,7 +133,7 @@ function thinking(message) {
   for (let i = 0; i < 3; i++) wrapper.append(document.createElement('i'));
   const label = document.createElement('span');
   label.className = 'pending-label';
-  label.textContent = '正在思考…';
+  label.textContent = queued ? '已收到，等待前一条回复…' : '正在思考…';
   const timer = document.createElement('span');
   timer.className = 'thinking-time';
   timer.setAttribute('role', 'timer');
@@ -174,7 +174,15 @@ function renderAssistant(row, message, session) {
   plan.className = 'task-plan';
   plan.setAttribute('aria-label', '任务计划');
   renderPlan(plan, message);
-  if (!message.text && message.state === 'streaming') body.append(thinking(message));
+  const task = message.replyTo?.startsWith('task:') ? session.tasks?.[message.taskId] : null;
+  if (task && !message.taskResult) {
+    body.setAttribute('role', 'status');
+    renderMarkdown(body, describeTask(task) + '\n\n' + task.effective_task_request);
+  } else if (!message.text && message.state === 'streaming') {
+    const queued = message.replyTo && session.messages.slice(0, session.messages.indexOf(message))
+      .some(m => m.state === 'streaming' && m.replyTo && !m.replyTo.startsWith('task:'));
+    body.append(thinking(message, queued));
+  }
   else renderMarkdown(body, message.text);
   row.append(heading, plan, body);
   if (message.toolProgress && message.state === 'streaming') {
@@ -203,10 +211,10 @@ function renderAssistant(row, message, session) {
       request.textContent = '请求编号：' + message.requestId;
       error.append(request);
     }
-    if (session.messages.at(-1) === message) {
+    if ((message.replyTo && !message.replyTo.startsWith('task:')) || session.messages.at(-1) === message) {
       const retry = document.createElement('button');
       retry.className = 'retry';
-      retry.textContent = '重新生成';
+      retry.textContent = message.replyTo ? '重试本条消息' : '重新生成';
       retry.disabled = !!job;
       retry.addEventListener('click', () => retryMessage(session, message));
       error.append(retry);
@@ -221,19 +229,6 @@ function renderAssistant(row, message, session) {
       catch (error) { toast(error.message); }
     });
     row.append(stop);
-  }
-  if (message.candidates?.length) {
-    for (const id of message.candidates) {
-      const pick = document.createElement('button');
-      pick.textContent = (session.tasks?.[id]?.goal || '任务') + ' · ' + id.slice(0, 8);
-      pick.addEventListener('click', () => {
-        $('message-mode').value = id;
-        const user = session.messages.find(m => m.id === message.replyTo);
-        if (user) { $('message-input').value = user.text; updateSend(); }
-        $('message-input').focus();
-      });
-      row.append(pick);
-    }
   }
   renderMessageTiming(row, message);
   const hasTrace = (message.tracingEnabled ?? tracingEnabled) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(message.requestId || '');
@@ -316,67 +311,6 @@ function updateSend() {
   $('input-note').textContent = '任务执行期间可继续聊天或补充要求 · Enter 发送';
 }
 
-function renderTasks() {
-  const session = activeSession();
-  const panel = $('duplex-tasks');
-  const select = $('message-mode');
-  const selected = select.value;
-  select.replaceChildren();
-  for (const [value, label] of [['', '自动关联'], ['CHAT', '独立聊天'], ['NEW_TASK', '新任务']]) {
-    select.add(new Option(label, value));
-  }
-  panel.replaceChildren();
-  for (const task of Object.values(session?.tasks || {})) {
-    select.add(new Option('关联：' + task.goal.slice(0, 14) + ' · ' + task.id.slice(0, 8), task.id));
-    const card = document.createElement('article');
-    card.className = 'duplex-task';
-    card.dataset.taskId = task.id;
-    const title = document.createElement('strong');
-    title.textContent = task.goal + ' · ' + task.id.slice(0, 8);
-    const status = document.createElement('span');
-    status.className = 'duplex-status';
-    status.textContent = taskLabels[task.status] || task.status;
-    const goal = document.createElement('p');
-    goal.textContent = task.effective_task_request;
-    const progress = document.createElement('small');
-    const todos = task.progress?.todos || [];
-    const toolNames = Object.values(task.progress?.active_tools || {}).map(t => t.name).join('、') || task.currentTool || '';
-    const closed = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(task.status);
-    progress.textContent = (toolNames ? `${task.status === 'RECOVERY_REQUIRED' ? '待核对操作' : '正在调用'} ${toolNames} · ` : '')
-      + (todos.length ? `已完成 ${todos.filter(t => t.status === 'completed').length} 项 · ` : '')
-      + (closed ? (task.status === 'SUCCEEDED' && task.revision > 0 ? '最新要求已应用' : '')
-        : task.controlNote || (task.applied_revision < task.revision ? '新要求等待应用' : ''));
-    card.append(title, status, goal, progress);
-    if (task.source_task_id) {
-      const reference = document.createElement('small');
-      reference.textContent = '修订任务 · 原成果 ' + task.source_task_id.slice(0, 8);
-      card.append(reference);
-    }
-    for (const [type, label] of (task.desired_action === 'CANCEL' ? [] : task.status === 'PAUSED' ? [['RESUME', '恢复'], ['CANCEL', '取消']]
-      : ['QUEUED', 'RUNNING', 'PAUSING'].includes(task.status) ? [['PAUSE', '暂停'], ['CANCEL', '取消']]
-      : ['RECOVERY_REQUIRED', 'WAITING_INPUT'].includes(task.status) ? [['CANCEL', '取消']] : [])) {
-      const button = document.createElement('button');
-      button.type = 'button'; button.textContent = label;
-      button.setAttribute('aria-label', `${label}任务：${task.goal}`);
-      button.addEventListener('click', async () => {
-        button.disabled = true;
-        try {
-          await requestJSON(`/api/tasks/${task.id}/controls`, { conversation_id: session.id,
-            control_id: crypto.randomUUID(), type, expected_revision: task.revision });
-          toast('指令已收到，等待任务状态确认');
-        } catch (error) { toast(error.message); button.disabled = false; }
-      });
-      card.append(button);
-    }
-    if (task.reason || task.error) {
-      const reason = document.createElement('p'); reason.textContent = task.reason || task.error.message;
-      card.append(reason);
-    }
-    panel.append(card);
-  }
-  if ([...select.options].some(o => o.value === selected)) select.value = selected;
-  panel.hidden = !panel.children.length;
-}
 
 function finish(running) {
   if (job !== running) return;
@@ -406,7 +340,8 @@ async function runConversation(session, message) {
     const user = session.messages.find(m => m.id === message.replyTo);
     if (user) {
       message.state = 'streaming'; message.text = ''; delete message.error;
-      duplex.send(session, user, message, message.sendMode || '');
+      renderMessages(); persist();
+      await duplex.send(session, user, message, message.sendMode || '');
     }
     return;
   }
@@ -484,8 +419,8 @@ async function runConversation(session, message) {
   } finally { finish(running); }
 }
 
-function retryMessage(session, message) {
-  if (job || session.messages.at(-1) !== message) return;
+async function retryMessage(session, message) {
+  if (job || (!message.replyTo && session.messages.at(-1) !== message) || message.state !== 'error') return;
   message.text = '';
   message.error = '';
   message.state = 'streaming';
@@ -493,7 +428,20 @@ function retryMessage(session, message) {
   delete message.todos;
   delete message.toolProgress;
   delete message.usage;
-  runConversation(session, message);
+  delete message.trace;
+  if (message.acceptedIntent === 'CHAT' || (message.replyTo && !message.replyTo.startsWith('task:') && session.tasks !== undefined)) {
+    // The server distinguishes an accepted failed chat from an unreceived message.
+    // Reuse the same retry id after a lost ACK to avoid starting another reply.
+    message.retryId ||= crypto.randomUUID();
+    renderMessages(); persist();
+    try {
+      const ack = await requestJSON(`/api/conversations/${session.id}/chats/${message.replyTo}/retry`, { retry_id: message.retryId });
+      if (ack.received === false) { await runConversation(session, message); return; }
+      message.acceptedIntent = 'CHAT';
+      if (!ack.pending) await duplex.connect(session);
+    } catch (error) { message.state = 'error'; message.error = error.message; }
+    persist(); renderMessages();
+  } else await runConversation(session, message);
 }
 
 function submitMessage() {
@@ -514,8 +462,6 @@ function submitMessage() {
   const user = session.messages.at(-2);
   renderMessages(); persist(); updateSend();
   if (!duplex.source) duplex.connect(session);
-  answer.sendMode = $('message-mode').value;
-  $('message-mode').value = '';
   duplex.send(session, user, answer, answer.sendMode);
 }
 
@@ -526,7 +472,6 @@ function newChat() {
   resizeInput();
   closeMenu();
   renderMessages();
-  renderTasks();
   renderHistory();
   updateSend();
   persist();
@@ -591,4 +536,3 @@ renderMessages();
 updateSend();
 refreshStatus();
 if (activeSession()) duplex.connect(activeSession());
-renderTasks();
