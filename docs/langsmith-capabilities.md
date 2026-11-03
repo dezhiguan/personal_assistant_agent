@@ -75,6 +75,12 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 有效低分未重试，用例、baseline和0.8门槛未改。
 此前118/122、121/122及不完整实验均保留，旧8192窗口与CI默认0的配置差异已明确记录。
 源码指纹核验、完整日志与先前中止记录位于 `artifacts/ci/native-evaluation/`。
+[aca170d的CI](https://github.com/dezhiguan/personal_assistant_agent/actions/runs/41549920451)免费检查通过，完整执行122次、120次通过、关键失败2次，整体未通过。
+编码请求的有效0.7分及文件缺失回复的字面措辞断言失败均保留，没有重评刷分或修改baseline。
+日志另有310处LangSmith月度唯一trace额度耗尽的HTTP429；平台追踪与反馈不完整。
+CI完整报告位于 `artifacts/ci/run-41549920451-attempt-1/golden-report/latest.json`。
+该CI已自行结束，取消请求未执行；不能根据平台未更新的span推断Graph卡死。
+额度恢复前停止在线重跑，未购买订阅、提高付费额度或关闭追踪绕过限制。
 云托管与GitHub Actions结果应分别核验，不能由本地评估代替。
 
 ## Token 与费用

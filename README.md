@@ -313,7 +313,9 @@ docker run --rm --env-file .env -p 127.0.0.1:8000:8000 \
 2026-11-03 本地完整 `make agent-check` 通过：489项 Python、17项前端、Ruff，
 默认CI配置真实场景122/122，关键失败0，源码指纹一致。
 [本轮LangSmith实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=8f626246-a408-496e-a9bd-8e207296f2ab)；[实施与历史失败记录](docs/design/full-duplex-agent-interaction.html#implementation)。
-用例、历史基线和0.8阈值未修改；发布后的CI结果需按对应提交另行核验。
+用例、历史基线和0.8阈值未修改。
+[提交aca170d的CI](https://github.com/dezhiguan/personal_assistant_agent/actions/runs/41549920451)免费检查通过，但在线场景120/122、关键失败2次，整体未通过；
+同时LangSmith月度trace额度耗尽（HTTP429），云端追踪不完整。失败报告保留，额度恢复前不重复在线检查。
 
 黄金集位于 `evaluations/golden/cases.json`，目前包含 **61条用例、12个维度**：
 
