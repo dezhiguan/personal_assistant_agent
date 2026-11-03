@@ -26,6 +26,7 @@ from personal_assistant_agent.evaluation.dataset import (
     sync_dataset,
 )
 from personal_assistant_agent.evaluation.evaluators import (
+    CorrectnessResult,
     assess,
     make_quality_evaluator,
     needs_quality,
@@ -53,6 +54,8 @@ def result_row(item, *, min_quality=QUALITY_FLOOR):
     required = needs_quality(case, observation)
     row["quality_required"] = required
     if required:
+        if "judge_format_retries" in feedback:
+            row["judge_format_retries"] = feedback["judge_format_retries"].score
         quality = feedback.get("judge_quality")
         score = quality.score if quality else None
         valid = type(score) in {int, float} and math.isfinite(score) and 0 <= score <= 1
@@ -104,6 +107,22 @@ async def run(args):
         metadata = {
             "model": settings.model_name,
             "judge_model": settings.model_name,
+            "judge_temperature": 0,
+            "judge_method": "function_calling",
+            "judge_format_attempts": 2,
+            "execution_profile": {
+                "context_window_tokens": settings.context_window_tokens,
+                "context_output_reserve_tokens": settings.context_output_reserve_tokens,
+                "max_output_tokens": settings.max_output_tokens,
+                "max_model_calls": settings.max_model_calls,
+                "max_tool_calls": settings.max_tool_calls,
+                "recursion_limit": settings.recursion_limit,
+                "request_timeout": settings.request_timeout,
+                "scenario_timeout": args.timeout,
+            },
+            "judge_schema_hash": hashlib.sha256(
+                json.dumps(CorrectnessResult.model_json_schema(), sort_keys=True).encode()
+            ).hexdigest(),
             "judge_package": "openevals:" + version("openevals"),
             "judge_prompt_hash": hashlib.sha256(CORRECTNESS_PROMPT.encode()).hexdigest(),
             "suite_hash": digest,
@@ -169,6 +188,7 @@ async def run(args):
                 + ([] if passed == len(expected) else ["case_failure"]),
             },
             "critical_failures": critical,
+            "judge_format_retries": sum(r.get("judge_format_retries", 0) for r in rows),
             "rows": rows,
             "legacy_baseline": "Retained unchanged; old judge scores are not interchangeable "
             "with the OpenEvals profile. Compare compatible experiments in LangSmith.",

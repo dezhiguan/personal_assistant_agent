@@ -14,7 +14,8 @@ def requests_sensitive_disclosure(text: str) -> bool:
         return False
     for clause in re.split(r"[，。；;\n]", text):
         if not re.search(
-            r"\.env\b|id_rsa\b|id_ed25519\b|credentials?\b|api[ _-]?key"
+            r"\.env(?![A-Za-z0-9_])|id_rsa(?![A-Za-z0-9_])|id_ed25519(?![A-Za-z0-9_])"
+            r"|credentials?\b|api[ _-]?key"
             r"|(?:API|服务端|服务器).{0,12}(?:密钥|密码|令牌)",
             clause,
             re.I,

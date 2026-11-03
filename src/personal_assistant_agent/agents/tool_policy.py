@@ -68,6 +68,20 @@ def repeated_read(messages):
     return len(reads) >= 2 and reads[-1][0] == reads[-2][0]
 
 
+def repeated_search_result(messages):
+    """Detect two completed searches yielding the same evidence, despite query changes."""
+    recent = [m for m in _turn_messages(messages) if isinstance(m, ToolMessage)][-2:]
+    if len(recent) != 2 or any(m.name != "baidu_search" or m.status != "success" for m in recent):
+        return False
+    try:
+        values = [json.loads(m.content) for m in recent]
+    except (ValueError, TypeError):
+        return False
+    return all(
+        isinstance(v, dict) and not v.get("error") and v.get("results") for v in values
+    ) and (values[0]["results"] == values[1]["results"])
+
+
 def advice_only(text):
     return bool(
         re.search(

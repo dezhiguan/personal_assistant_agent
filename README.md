@@ -88,7 +88,7 @@ uv run python scripts/evaluate_agent.py --judge
 
 服务使用 `.env` 中固定到提交哈希的 `LANGSMITH_PROMPT_REF`，更新后需重启。启动服务后执行 `uv run python scripts/verify_usage.py --planning`，核对真实 Token 与 LangSmith 汇总费用。金额为版本化标价估算，不是百炼账单。
 
-完整配置、报告位置、工作流启用条件与部署限制见 [LangSmith 接入与验收](docs/langsmith-capabilities.md)。GitHub Actions 随代码发布：常规测试自动执行；真实评测需要仓库 Secrets，缺少时自动触发的评测会明确跳过。LangSmith 云托管受账号 Plus 套餐限制，尚未开通付费资源。
+完整配置、报告位置、工作流启用条件与部署限制见 [LangSmith 接入与验收](docs/langsmith-capabilities.md)。GitHub Actions 随代码发布：常规测试自动执行；真实评测需要 golden-evaluation 环境 Secrets，缺少时明确失败。LangSmith 云托管受账号 Plus 套餐限制，尚未开通付费资源。
 
 前端排版使用本地打包的 Marked 与 DOMPurify，依赖版本、完整性校验和许可保存在 `static/vendor/`，浏览器运行时不依赖外部 CDN。
 
@@ -306,12 +306,14 @@ docker run --rm --env-file .env -p 127.0.0.1:8000:8000 \
 
 镜像预建 `/app/workspace` 并授予运行用户访问权限。默认文件随容器删除而丢失；需要持久化时挂载仅包含工作区的专用卷（如 `-v assistant-workspace:/app/workspace`），不要挂载宿主项目、主目录或密钥目录。自定义目录必须预先授予非 root 运行用户写权限。
 
-也可直接在服务器安装依赖、运行 Python 服务。当前版本面向本机单用户使用，未内置登录认证或服务端会话持久化。公网部署时需自行配置身份认证、HTTPS 和访问控制。
+也可直接在服务器安装依赖、运行 Python 服务。当前版本面向本机单用户使用，未内置登录认证。全双工接口使用 SQLite 和官方 Checkpointer 持久化消息、任务与控制状态；旧 /api/chat 仍采用原请求模式。公网部署时需自行配置身份认证、HTTPS 和访问控制。
 
 ## 多维度黄金集与回归门禁
 
-2026-11-03 本地完整 `make agent-check` 通过：459项 Python、17项前端、Ruff、真实场景122/122，关键失败0。
-[查看原生 LangSmith 实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=711831f6-1005-449b-91c7-f82a3eb9191e)。用例与历史基线未修改；CI结果需按对应提交核验。
+2026-11-03 本地完整 `make agent-check` 通过：489项 Python、17项前端、Ruff，
+默认CI配置真实场景122/122，关键失败0，源码指纹一致。
+[本轮LangSmith实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=8f626246-a408-496e-a9bd-8e207296f2ab)；[实施与历史失败记录](docs/design/full-duplex-agent-interaction.html#implementation)。
+用例、历史基线和0.8阈值未修改；发布后的CI结果需按对应提交另行核验。
 
 黄金集位于 `evaluations/golden/cases.json`，目前包含 **61条用例、12个维度**：
 

@@ -35,18 +35,30 @@ make golden         # 仅真实模型实验，122次场景检查
 make golden-offline # 17条边界场景各运行两次，无网络
 ```
 
+复现CI的默认窗口配置（密钥仍从受保护环境或本机.env读取）：
+
+```bash
+MODEL_NAME=qwen3.8-flash MODEL_CONTEXT_WINDOW_TOKENS=0 LANGSMITH_PROMPT_REF= make agent-check
+```
+
 `scripts/run_golden.py` 与兼容入口 `scripts/evaluate_agent.py` 调用同一实现。
 LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录；官方 OpenEvals Correctness
 负责开放题评分，Agent和裁判均使用 `qwen3.8-flash`，不需要 Qwen-Plus 权限。
 工具回执由官方RunCollectorCallbackHandler采集，保留实际参数、结果和退出码并脱敏私密配置，
-供裁判核验执行事实。字符数和JSON格式由程序独立强制核验，语义裁判只评事实正确性和内容完整性，不估算字符数。
+供裁判核验执行事实。根Graph输出中的已提交ToolMessage另列为graph_tool_receipts，
+覆盖无工具span的缓存和授权拒绝，不能把这些尝试当成新执行。字符数和JSON格式由程序独立强制核验，语义裁判只评事实正确性和内容完整性，不估算字符数。
+裁判使用官方 Function Calling、temperature=0，Pydantic 验证有限0–1分数及非空说明。
+说明不设字符上限；候选答复的原始长度限制仍由程序断言执行。
+只有无效评分格式可通过官方 Runnable 最多尝试两次，有效低分不重试；
+成功恢复的格式重试写入 judge_format_retries 反馈和报告；原生追踪保留尝试过程。
+超时、供应商错误及最终无效格式仍失败。
 项目仍保留工具授权、真实文件、待办、交付格式等业务断言，以及独立的真实 Graph 并发与进程恢复测试。
 接入 LangSmith 不会自动生成这些业务正确性标准。
 
 每次检查必须通过项目断言，需语义评分时分数至少0.8；全部122次通过才允许发布。
 关键失败单独列出，执行或裁判错误、缺失反馈及不完整覆盖均失败。模型裁判可能误判，仍需人工复核。
 历史基线原样保留，不用另一评分器的分数覆盖；在 LangSmith 内比较评分配置一致的实验。
-实验记录包含模型、评分器版本和提示词哈希、用例哈希、Agent源码哈希、Git revision及未提交标记。
+实验记录包含模型、评分器版本和提示词哈希、用例哈希、Agent源码哈希、执行窗口/输出和调用预算/超时配置、Git revision及未提交标记。
 本地完整报告与合成工作区位于忽略的 `artifacts/golden/`，最新摘要为 `latest.json`。
 
 只保留 `.github/workflows/agent-regression.yml`，免费检查后执行真实模型实验，
@@ -54,9 +66,15 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 `DASHSCOPE_API_KEY`、`LANGSMITH_API_KEY`；托管提示词可配置固定版本 `LANGSMITH_PROMPT_REF`。
 缺少配置明确失败；报告在失败时仍上传。`--judge` 为兼容选项，正式实验始终启用质量评分。
 
-2026-11-03 本地完整检查通过：459项Python、17项Node、Ruff，真实场景122/122，关键失败0。
-[本轮实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=711831f6-1005-449b-91c7-f82a3eb9191e) 为 `personal-assistant-golden-91dfc2d1`；
-源码指纹核验、完整日志与先前两次中止记录位于 `artifacts/ci/native-evaluation/`。
+2026-11-03 历史版本本地检查通过：459项Python、17项Node、Ruff，真实场景122/122，关键失败0。
+[历史实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=711831f6-1005-449b-91c7-f82a3eb9191e) 为 `personal-assistant-golden-91dfc2d1`；
+当前本地完整make agent-check通过：489项Python、17项Node、Ruff，默认CI窗口0，
+真实场景122/122、关键失败0，Agent与裁判均为Qwen3.8-Flash，源码前后指纹一致。
+[当前实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=8f626246-a408-496e-a9bd-8e207296f2ab) 为 `personal-assistant-golden-fbf58454`；
+报告：`artifacts/golden/20261102T235639Z-8acef6/report.json`。2次无效评分格式通过官方有界重试恢复，平台和报告均记录；
+有效低分未重试，用例、baseline和0.8门槛未改。
+此前118/122、121/122及不完整实验均保留，旧8192窗口与CI默认0的配置差异已明确记录。
+源码指纹核验、完整日志与先前中止记录位于 `artifacts/ci/native-evaluation/`。
 云托管与GitHub Actions结果应分别核验，不能由本地评估代替。
 
 ## Token 与费用

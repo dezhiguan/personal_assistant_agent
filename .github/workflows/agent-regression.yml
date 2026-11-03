@@ -31,6 +31,7 @@ jobs:
     env:
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
       MODEL_NAME: qwen3.8-flash
+      MODEL_CONTEXT_WINDOW_TOKENS: '0'
       LANGSMITH_PROMPT_REF: ${{ vars.LANGSMITH_PROMPT_REF }}
       LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
       LANGSMITH_TRACING: 'true'

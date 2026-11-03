@@ -305,7 +305,7 @@ def validate_time_budget(
     }
 
 
-def build_tools(settings: Settings) -> list[BaseTool]:
+def build_baidu_search(settings: Settings, *, search=None) -> BaseTool:
     if not 0 < settings.baidu_timeout <= 60:
         raise ValueError("BAIDU_TIMEOUT_SECONDS 必须大于 0 且不超过 60。")
     if settings.baidu_proxy:
@@ -326,6 +326,8 @@ def build_tools(settings: Settings) -> list[BaseTool]:
         """
         if not query.strip() or len(query) > 500 or not 1 <= max_results <= 10:
             return {"error": "关键词必须为 1–500 字符，max_results 必须为 1–10。"}
+        if search is not None:
+            return await search(query, max_results)
         try:
             async with httpx.AsyncClient(
                 timeout=settings.baidu_timeout,
@@ -368,13 +370,22 @@ def build_tools(settings: Settings) -> list[BaseTool]:
         except (ValueError, LookupError):
             return {"source": "baidu", "error": "百度页面无法解析，未获得可用结果。"}
 
+    return baidu_search
+
+
+def build_tools(settings: Settings) -> list[BaseTool]:
     from personal_assistant_agent.agents.amap_tools import build_amap_tools
     from personal_assistant_agent.agents.calendar_tools import build_calendar_tools
     from personal_assistant_agent.agents.life_tools import build_life_tools
     from personal_assistant_agent.agents.travel_tools import build_travel_tools
 
     return [
-        baidu_search, get_current_time, calculate, validate_time_budget,
-        *build_life_tools(settings), *build_travel_tools(settings), *build_calendar_tools(settings),
+        build_baidu_search(settings),
+        get_current_time,
+        calculate,
+        validate_time_budget,
+        *build_life_tools(settings),
+        *build_travel_tools(settings),
+        *build_calendar_tools(settings),
         *build_amap_tools(settings),
     ]

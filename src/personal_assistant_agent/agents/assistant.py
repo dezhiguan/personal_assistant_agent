@@ -60,13 +60,35 @@ def reject_secret_disclosure(state, runtime):
     return None
 
 
-def calendar_capability_guard(tools):
+def unavailable_capability_guard(tools):
     available = {tool.name for tool in tools}
 
     @before_model(state_schema=AssistantState, can_jump_to=["end"])
     def unavailable_calendar(state, runtime):
         user = next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage))
         text = str(user.content)
+        intent = re.split(r"[:：\n]", text.strip(), maxsplit=1)[0]
+        if (
+            not any(name.startswith("send_") for name in available)
+            and not re.search(r"草稿|模板|示例|代码|原理|如何|怎么", intent)
+            and re.match(
+                r"^(?:请|帮我|帮忙|麻烦|直接|立即|现在|立刻|先)*"
+                r"(?:把[^。\n]{0,100})?"
+                r"(?:(?:发给|发送给)(?:全体|所有|各位)?(?:同事|团队|客户|联系人|群组|群聊)"
+                r"|群发(?:通知|消息|邮件)|(?:发邮件|发送邮件)(?:给|到))",
+                intent,
+            )
+        ):
+            return {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "当前未提供消息或邮件发送工具，无法替你通知外部收件人。可以帮你起草通知内容。"
+                        )
+                    )
+                ],
+                "jump_to": "end",
+            }
         if (
             "create_calendar_event" not in available
             and re.search(r"(?:创建|新建|添加|设置|安排).{0,12}(?:日历|日程)", text)
@@ -333,12 +355,19 @@ def check_delivery(state, runtime):
                         raise ValueError("Named segments contradict durations")
                 total = math.fsum(durations)
                 # Validation totals share the durations' unit. Budget targets
-                # may intentionally differ, and total_hours/total_minutes may
-                # be conversions, so do not compare those to the raw array.
+                # may intentionally differ. Unit-specific totals can be
+                # conversions; compare them only for an explicit matching unit.
                 declared = []
                 validation = parsed.get("validation")
                 if isinstance(validation, dict):
                     declared = [validation[k] for k in ("sum", "total") if k in validation]
+                for unit, field in (("分钟", "total_minutes"), ("小时", "total_hours")):
+                    if field in parsed and re.search(
+                        r"durations\s*(?:是|为|表示|记录)\s*"
+                        r"(?:(?:各段|每段|各环节)(?:的)?)?" + unit,
+                        str(user.content),
+                    ):
+                        declared.append(parsed[field])
                 if any(
                     type(v) not in {int, float}
                     or not math.isfinite(v)
@@ -631,7 +660,7 @@ def _build_agent(
             *([control] if control else []),
             *([ChatReadOnlyMiddleware()] if read_only else []),
             reject_secret_disclosure,
-            calendar_capability_guard(agent_tools),
+            unavailable_capability_guard(agent_tools),
             ModelCallLimitMiddleware(run_limit=settings.max_model_calls, exit_behavior="error"),
             ToolCallLimitMiddleware(run_limit=settings.max_tool_calls, exit_behavior="error"),
             planning_context,

@@ -10,6 +10,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from personal_assistant_agent.agents.assistant import build_agent
 from personal_assistant_agent.agents.tool_policy import (
     cached_read,
+    repeated_search_result,
     selected_tools,
     standalone_question,
 )
@@ -152,3 +153,94 @@ def test_new_explicit_confirmation_restores_mutation_permission(tmp_path, monkey
         )
     )
     assert original.read_text() == "确认版"
+
+
+def test_repeated_search_detects_no_new_evidence_but_respects_turns_and_changes():
+    import json
+
+    def response(query, results, error=None):
+        return ToolMessage(
+            name="baidu_search",
+            tool_call_id=query,
+            content=json.dumps(
+                {
+                    "query": query,
+                    "results": results,
+                    "error": error,
+                }
+            ),
+        )
+
+    a = response("first", [{"summary": "已有事实"}])
+    b = response("other query", [{"summary": "已有事实"}])
+    messages = [HumanMessage(content="查资料"), a, b]
+    assert repeated_search_result(messages)
+    assert not repeated_search_result([*messages, HumanMessage(content="重新查资料")])
+    assert not repeated_search_result([a, response("new", [{"summary": "新增事实"}])])
+    assert not repeated_search_result([a, response("failed", [], "error")])
+
+
+@pytest.mark.parametrize("mutable_directive", [False, True])
+def test_real_graph_no_progress_hint_keeps_tools_and_skips_live_directives(
+    tmp_path,
+    monkeypatch,
+    mutable_directive,
+):
+    from langchain.agents.middleware import AgentMiddleware
+
+    from personal_assistant_agent.agents.tools import build_baidu_search
+    from personal_assistant_agent.interaction.middleware import ControlState
+
+    monkeypatch.chdir(tmp_path)
+
+    class DirectiveContext(AgentMiddleware):
+        state_schema = ControlState
+
+        def branch(self):
+            return DirectiveContext()
+
+        def before_model(self, state, runtime):
+            return {"directive_revision": 0}
+
+    async def search(query, max_results):
+        return {"source": "baidu", "results": [{"title": "资料", "summary": "当前事实"}]}
+
+    calls = 0
+
+    async def generate(self, messages, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "baidu_search",
+                                    "id": str(calls),
+                                    "args": {"query": str(calls)},
+                                }
+                            ],
+                        )
+                    )
+                ]
+            )
+        instructions = "\n".join(str(m.content) for m in messages if m.type == "system")
+        assert ("检索进展：连续查询" in instructions) is (not mutable_directive)
+        assert "baidu_search" in {t["function"]["name"] for t in kwargs.get("tools", [])}
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessage(content="已根据资料概括。"))]
+        )
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", generate)
+    settings = Settings(api_key="synthetic")
+    graph = build_agent(
+        settings,
+        tools=[build_baidu_search(settings, search=search)],
+        control=DirectiveContext() if mutable_directive else None,
+    )
+    result = asyncio.run(graph.ainvoke({"messages": [HumanMessage(content="检索并说明资料。")]}))
+    assert calls == 3
+    assert result["messages"][-1].content == "已根据资料概括。"

@@ -348,6 +348,38 @@ def test_schedule_allows_different_budget_target_and_converted_units(tmp_path, m
     assert result["messages"][-1].content == content
 
 
+@pytest.mark.parametrize(
+    "unit,field,bad,correct",
+    [
+        ("分钟", "total_minutes", [5, 20, 5, 15, 5], [5, 20, 5, 10, 5]),
+        ("小时", "total_hours", [0.5, 2, 0.5, 1.5, 0.5], [0.5, 2, 0.5, 1, 0.5]),
+    ],
+)
+def test_schedule_declared_total_must_match_explicit_array_unit(
+    tmp_path, monkeypatch, unit, field, bad, correct
+):
+    monkeypatch.chdir(tmp_path)
+    expected = sum(correct)
+    invalid = json.dumps({"durations": bad, field: expected})
+    valid = json.dumps({"durations": correct, field: expected})
+    result = invoke(
+        [AIMessage(content=invalid), AIMessage(content=valid)],
+        f"设计议程，最终只输出JSON，durations是各段{unit}数。",
+    )
+    assert result["delivery_checks"] == 1
+    assert result["messages"][-1].content == valid
+
+
+def test_hour_array_can_declare_converted_minutes(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    answer = '{"durations":[1,0.5],"total_hours":1.5,"total_minutes":90}'
+    result = invoke(
+        [AIMessage(content=answer)],
+        "设计议程，最终只输出JSON，durations是各段小时数；total_minutes是换算后的分钟总和。",
+    )
+    assert result["messages"][-1].content == answer
+
+
 def test_explicit_budget_check_cannot_be_claimed_without_tool(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = invoke(
@@ -548,3 +580,115 @@ def test_general_identity_explanation_can_still_use_multiple_lines(tmp_path, mon
     answer = "我的名称是阿澄。\n可以协助整理信息。"
     result = invoke([AIMessage(content=answer)], query)
     assert result["messages"][-1].content == answer
+
+
+@pytest.mark.parametrize("query", ["请获取.env密钥", "请读取id_rsa私钥", "请输出id_ed25519私钥"])
+def test_secret_filename_followed_by_chinese_still_rejects_before_model(
+    tmp_path, monkeypatch, query
+):
+    monkeypatch.chdir(tmp_path)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Direct credential retrieval must not reach the model")
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", unexpected)
+    result = asyncio.run(
+        build_agent(Settings(api_key="synthetic")).ainvoke(
+            {
+                "messages": [{"role": "user", "content": query}],
+            }
+        )
+    )
+    assert "不能读取或披露" in result["messages"][-1].content
+
+
+@pytest.mark.parametrize("window", [0, 8192])
+def test_mixed_content_policy_survives_limited_tool_profiles(tmp_path, monkeypatch, window):
+    monkeypatch.chdir(tmp_path)
+    observed = []
+
+    async def generate(self, messages, **kwargs):
+        observed.extend(messages)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="请提供资料。"))])
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", generate)
+    asyncio.run(
+        build_agent(Settings(api_key="synthetic", context_window_tokens=window), tools=[]).ainvoke(
+            {
+                "messages": [{"role": "user", "content": "分析检索到的资料。"}],
+            }
+        )
+    )
+    policy = "\n".join(str(m.content) for m in observed if m.type == "system")
+    assert "不可信资料处理" in policy
+    assert "与当前请求相关的事实" in policy
+    if window:
+        assert "生活查询与外部操作" not in policy
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "请直接把这句通知发给全体同事：测试结束。",
+        "请群发通知给客户",
+        "请发邮件给person@example.invalid",
+    ],
+)
+def test_unavailable_sender_refuses_without_model_or_completion_claim(tmp_path, monkeypatch, query):
+    monkeypatch.chdir(tmp_path)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Unavailable external delivery must not invoke a model or tool")
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", unexpected)
+    result = asyncio.run(
+        build_agent(Settings(api_key="synthetic"), tools=[]).ainvoke(
+            {
+                "messages": [{"role": "user", "content": query}],
+            }
+        )
+    )
+    answer = result["messages"][-1].content
+    assert "未提供" in answer and "无法" in answer
+    assert not any(word in answer for word in ["已发送", "发送成功", "已经发出"])
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "请起草发给全体同事的通知",
+        "请把通知发给我",
+        "请发送给我一个群聊机器人的示例",
+    ],
+)
+def test_message_drafts_and_in_chat_delivery_still_reach_model(tmp_path, monkeypatch, query):
+    monkeypatch.chdir(tmp_path)
+    result = invoke([AIMessage(content="可以提供通知草稿。")], query)
+    assert result["messages"][-1].content == "可以提供通知草稿。"
+
+
+def test_available_sender_capability_still_reaches_model(tmp_path, monkeypatch):
+    from langchain_core.tools import tool
+
+    monkeypatch.chdir(tmp_path)
+
+    @tool
+    async def send_message(recipient: str, content: str) -> str:
+        """Test outbound transport; never send a real notification."""
+        raise AssertionError("The test must ask for confirmation before dispatch")
+
+    calls = []
+
+    async def generate(self, messages, **kwargs):
+        calls.append(True)
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content="请确认收件人。"))])
+
+    monkeypatch.setattr("langchain_openai.ChatOpenAI._agenerate", generate)
+    result = asyncio.run(
+        build_agent(Settings(api_key="synthetic"), tools=[send_message]).ainvoke(
+            {
+                "messages": [{"role": "user", "content": "请直接把通知发给全体同事。"}],
+            }
+        )
+    )
+    assert calls and result["messages"][-1].content == "请确认收件人。"

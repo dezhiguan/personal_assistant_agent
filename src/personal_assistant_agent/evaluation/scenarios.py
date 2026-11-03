@@ -5,17 +5,25 @@ import json
 import os
 import time
 from dataclasses import fields, replace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from langchain_core.tools import tool
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tracers.run_collector import RunCollectorCallbackHandler
 from langsmith import get_current_run_tree
 from pydantic import ValidationError
 
 from personal_assistant_agent.agents.assistant import build_agent
-from personal_assistant_agent.agents.tools import calculate, validate_time_budget
+from personal_assistant_agent.agents.tools import (
+    build_baidu_search,
+    calculate,
+    get_current_time,
+    validate_time_budget,
+)
 from personal_assistant_agent.agents.workspace import WorkspaceBackend
+from personal_assistant_agent.core.config import Settings
 from personal_assistant_agent.evaluation.golden import Case
 from personal_assistant_agent.schemas.chat import ChatRequest
 from personal_assistant_agent.services.chat import ChatService
@@ -23,25 +31,31 @@ from personal_assistant_agent.services.chat import ChatService
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def fixture_tools(case):
-    @tool
-    def baidu_search(query: str, max_results: int = 5) -> dict:
-        """Return synthetic search evidence; never contact a search engine in evaluation."""
+def fixture_tools(case, settings=None):
+    async def search(query: str, max_results: int = 5) -> dict:
         return case.search_results or {"source": "baidu", "error": "合成故障：检索服务不可用"}
 
-    @tool
-    def get_current_time(timezone: str = "Asia/Shanghai") -> dict:
-        """Return the benchmark's fixed time; never infer the real current date."""
+    def frozen_time(timezone: str = "Asia/Shanghai") -> dict:
+        try:
+            now = datetime(2026, 10, 30, 8, tzinfo=UTC).astimezone(ZoneInfo(timezone))
+        except (ZoneInfoNotFoundError, ValueError):
+            return {"error": "无效时区，请使用 Asia/Shanghai、UTC 等 IANA 时区名称。"}
+        monday = now.date() - timedelta(days=now.weekday())
         return {
             "timezone": timezone,
-            "date": "2026-10-30",
-            "weekday": 5,
-            "datetime": "2026-10-30T16:00:00+08:00",
-            "week_start": "2026-10-26",
-            "week_end": "2026-11-01",
+            "date": now.date().isoformat(),
+            "weekday": now.isoweekday(),
+            "datetime": now.isoformat(timespec="seconds"),
+            "week_start": monday.isoformat(),
+            "week_end": (monday + timedelta(days=6)).isoformat(),
         }
 
-    return [baidu_search, get_current_time, calculate, validate_time_budget]
+    return [
+        build_baidu_search(settings or Settings(), search=search),
+        get_current_time.model_copy(update={"func": frozen_time}),
+        calculate,
+        validate_time_budget,
+    ]
 
 
 def boundary(case, directory):
@@ -65,6 +79,46 @@ def boundary(case, directory):
         return []
 
 
+def redacted_record(record, secrets):
+    serialized = json.dumps(record, ensure_ascii=False)
+    for secret in secrets:
+        if secret:
+            serialized = serialized.replace(
+                json.dumps(secret, ensure_ascii=False)[1:-1], "[redacted]"
+            )
+    return json.loads(serialized)
+
+
+def graph_tool_receipts(runs, secrets=()):
+    """Committed ToolMessages include middleware returns without a tool span."""
+    receipts = []
+    for run in runs:
+        messages = (run.outputs or {}).get("messages", [])
+        calls = {
+            call["id"]: call
+            for message in messages
+            if isinstance(message, AIMessage)
+            for call in message.tool_calls
+        }
+        for message in messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            receipts.append(
+                redacted_record(
+                    {
+                        "name": message.name,
+                        "tool_call_id": message.tool_call_id,
+                        "inputs": calls.get(message.tool_call_id, {}).get("args"),
+                        "content": message.content,
+                        "status": message.status,
+                        "cached": bool(message.additional_kwargs.get("assistant_cached_tool")),
+                    },
+                    secrets,
+                )
+            )
+    return receipts
+
+
 def tool_receipts(runs, secrets=()):
     """Use native trace records, retaining actual outcomes and removing credential values."""
     pending, seen, records = list(runs), set(), []
@@ -80,13 +134,7 @@ def tool_receipts(runs, secrets=()):
             mode="json", include={"id", "name", "inputs", "outputs", "start_time"}
         )
         record["error"] = bool(run.error)
-        serialized = json.dumps(record, ensure_ascii=False)
-        for secret in secrets:
-            if secret:
-                serialized = serialized.replace(
-                    json.dumps(secret, ensure_ascii=False)[1:-1], "[redacted]"
-                )
-        records.append(json.loads(serialized))
+        records.append(redacted_record(record, secrets))
     return sorted(records, key=lambda record: record["start_time"])
 
 
@@ -148,7 +196,7 @@ class ScenarioTarget:
                     else self.settings.langsmith_project,
                 )
                 graph = await asyncio.to_thread(
-                    build_agent, scoped, tools=fixture_tools(case), prompt=self.prompt
+                    build_agent, scoped, tools=fixture_tools(case, scoped), prompt=self.prompt
                 )
                 collector = RunCollectorCallbackHandler()
                 secrets = [
@@ -178,6 +226,9 @@ class ScenarioTarget:
                             "todos": todos,
                             "tools": [receipt["name"] for receipt in receipts],
                             "tool_receipts": receipts,
+                            "graph_tool_receipts": graph_tool_receipts(
+                                collector.traced_runs, secrets
+                            ),
                             "done": any(e["type"] == "done" for e in events),
                             "errors": errors,
                         }
