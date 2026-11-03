@@ -34,6 +34,10 @@ from personal_assistant_agent.evaluation.evaluators import (
 )
 from personal_assistant_agent.evaluation.golden import Case, finalize_row, source_hash
 from personal_assistant_agent.evaluation.scenarios import ROOT, ScenarioTarget
+from personal_assistant_agent.evaluation.trace_delivery import (
+    check_trace_ingestion,
+    missing_trace_runs,
+)
 from personal_assistant_agent.services.prompts import load_prompt
 
 QUALITY_FLOOR = 0.8
@@ -88,22 +92,59 @@ async def run(args):
     output = ROOT / "artifacts/golden" / stamp
     output.mkdir(parents=True, mode=0o700)
     (output / "cases.snapshot.json").write_bytes(args.cases.read_bytes())
+    try:
+        await asyncio.to_thread(check_trace_ingestion, settings)
+    except Exception as error:
+        reason = (
+            "langsmith_monthly_trace_limit"
+            if "Monthly unique traces usage limit exceeded" in str(error)
+            else "trace_ingestion_unavailable"
+        )
+        report = {
+            "execution_status": "not_started",
+            "model": settings.model_name,
+            "suite_hash": digest,
+            "source_hash": source_hash(ROOT),
+            "expected_cases": len(records) * args.repeats,
+            "total": 0,
+            "passed": 0,
+            "rows": [],
+            "critical_checks_completed": 0,
+            "gate": {"passed": False, "reasons": [reason, "incomplete_coverage"]},
+            "error": type(error).__name__,
+        }
+        for path in (output / "preflight.json", ROOT / "artifacts/golden/latest.json"):
+            path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+            path.chmod(0o600)
+        print("Trace ingestion preflight failed:", reason, type(error).__name__)
+        print("No model scenarios were executed; critical checks were not run.")
+        print("Report:", output / "preflight.json")
+        return 2
     client = None
+    ingestion_errors = []
     try:
         client = Client(
             api_key=settings.langsmith_api_key,
             api_url=settings.langsmith_endpoint,
             timeout_ms=15000,
+            tracing_error_callback=lambda error: ingestion_errors.append(type(error).__name__),
         )
         dataset, _, _ = await asyncio.to_thread(sync_dataset, client, args.cases, args.dataset)
         data, dataset_id = dataset.name, str(dataset.id)
         prompt = await asyncio.to_thread(load_prompt, settings)
-        scenario = ScenarioTarget(settings, prompt, output, timeout=args.timeout)
+        scenario = ScenarioTarget(
+            settings, prompt, output, timeout=args.timeout, trace_client=client
+        )
 
         async def target(inputs):
+            if ingestion_errors:
+                raise RuntimeError("LangSmith trace delivery unavailable")
             return await scenario(inputs)
 
-        evaluators = [project_assertions, make_quality_evaluator(settings)]
+        evaluators = [
+            project_assertions,
+            make_quality_evaluator(settings, trace_errors=ingestion_errors),
+        ]
         metadata = {
             "model": settings.model_name,
             "judge_model": settings.model_name,
@@ -158,6 +199,14 @@ async def run(args):
                     + ",".join(row["failures"]),
                     flush=True,
                 )
+        await asyncio.to_thread(client.flush, timeout=15)
+        try:
+            missing_runs = await asyncio.to_thread(
+                missing_trace_runs, client, [row["run_id"] for row in rows]
+            )
+        except Exception as error:
+            ingestion_errors.append(type(error).__name__)
+            missing_runs = [row["run_id"] for row in rows]
         expected = {
             (r["metadata"]["case_id"], n) for r in records for n in range(1, args.repeats + 1)
         }
@@ -182,10 +231,19 @@ async def run(args):
             "total": len(rows),
             "min_quality": args.min_quality,
             "gate": {
-                "passed": complete and passed == len(expected),
+                "passed": complete
+                and passed == len(expected)
+                and not ingestion_errors
+                and not missing_runs,
                 "reasons": ([] if complete else ["incomplete_coverage"])
                 + ([] if not critical else ["critical_failure"])
-                + ([] if passed == len(expected) else ["case_failure"]),
+                + ([] if passed == len(expected) else ["case_failure"])
+                + ([] if not ingestion_errors else ["trace_ingestion_failed"])
+                + ([] if not missing_runs else ["trace_delivery_incomplete"]),
+            },
+            "trace_delivery": {
+                "errors": sorted(set(ingestion_errors)),
+                "missing_target_runs": missing_runs,
             },
             "critical_failures": critical,
             "judge_format_retries": sum(r.get("judge_format_retries", 0) for r in rows),
@@ -199,11 +257,11 @@ async def run(args):
         print(f"Passed {passed}/{len(expected)}; experiment: {results.experiment_name}")
         print("Report:", output / "report.json")
         print("Critical failures:", len(critical))
+        print("Trace delivery:", "incomplete" if ingestion_errors or missing_runs else "confirmed")
         return 0 if report["gate"]["passed"] else 1
     finally:
         if client:
-            await asyncio.to_thread(client.flush)
-            await asyncio.to_thread(client.close)
+            await asyncio.to_thread(client.close, timeout=0)
 
 
 def main():

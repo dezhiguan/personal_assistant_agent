@@ -55,6 +55,13 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 项目仍保留工具授权、真实文件、待办、交付格式等业务断言，以及独立的真实 Graph 并发与进程恢复测试。
 接入 LangSmith 不会自动生成这些业务正确性标准。
 
+运行真实实验前，官方SDK同步写入一条仅含合成数据的已结束探针，确认追踪写入可用；
+预检拒绝时保存not_started报告、退出失败，不调用场景或裁判模型。
+目标执行、CostTracer及实验复用同一Client；场景不回收共享Client。
+官方tracing_error_callback一旦报告上传错误，后续目标和评分停止模型调用；在途请求可先结束。
+最终flush后通过原生list_runs核验目标run_id，上传错误或缺失记录也阻断发布。
+默认聊天服务仍独立持有Client，使用官方有界close，不再重复排空。
+
 每次检查必须通过项目断言，需语义评分时分数至少0.8；全部122次通过才允许发布。
 关键失败单独列出，执行或裁判错误、缺失反馈及不完整覆盖均失败。模型裁判可能误判，仍需人工复核。
 历史基线原样保留，不用另一评分器的分数覆盖；在 LangSmith 内比较评分配置一致的实验。
@@ -68,12 +75,13 @@ LangSmith 原生 `aevaluate` 负责实验、并发、重复运行和评分记录
 
 2026-11-03 历史版本本地检查通过：459项Python、17项Node、Ruff，真实场景122/122，关键失败0。
 [历史实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=711831f6-1005-449b-91c7-f82a3eb9191e) 为 `personal-assistant-golden-91dfc2d1`；
-当前本地完整make agent-check通过：489项Python、17项Node、Ruff，默认CI窗口0，
-真实场景122/122、关键失败0，Agent与裁判均为Qwen3.8-Flash，源码前后指纹一致。
-[当前实验](https://smith.langchain.com/o/a7cf4d73-f4f9-44f1-9a1f-a8ac88a4ccc0/datasets/738db8d7-5ede-4e4b-8e77-8c7430ba0087/compare?selectedSessions=8f626246-a408-496e-a9bd-8e207296f2ab) 为 `personal-assistant-golden-fbf58454`；
-报告：`artifacts/golden/20261102T235639Z-8acef6/report.json`。2次无效评分格式通过官方有界重试恢复，平台和报告均记录；
-有效低分未重试，用例、baseline和0.8门槛未改。
-此前118/122、121/122及不完整实验均保留，旧8192窗口与CI默认0的配置差异已明确记录。
+最新候选已完整执行make agent-check：502项Python、17项Node、Ruff通过；
+真实同步写入预检收到LangSmithRateLimitError，场景和裁判调用均为0，关键检查未执行，整体失败。
+报告：`artifacts/golden/20261103T011454Z-44596e/preflight.json`。
+提示词已补充文件缺失说明；裁判输入补齐既有整轮凭据拒绝边界，普通安全讨论/公开文本转换仍正常处理。
+这两项候选修复尚未在线验收；旧有效0.7分不覆盖，用例、baseline与0.8门槛不变。
+历史本地489项Python与122/122场景通过仅适用于对应旧源码，报告仍保留在
+`artifacts/golden/20261102T235639Z-8acef6/report.json`，不能替代当前候选。
 源码指纹核验、完整日志与先前中止记录位于 `artifacts/ci/native-evaluation/`。
 [aca170d的CI](https://github.com/dezhiguan/personal_assistant_agent/actions/runs/41549920451)免费检查通过，完整执行122次、120次通过、关键失败2次，整体未通过。
 编码请求的有效0.7分及文件缺失回复的字面措辞断言失败均保留，没有重评刷分或修改baseline。

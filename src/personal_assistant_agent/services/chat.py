@@ -99,15 +99,19 @@ def public_error(error: Exception) -> tuple[str, str]:
 
 
 class ChatService:
-    def __init__(self, agent: Any, settings: Settings) -> None:
+    def __init__(
+        self, agent: Any, settings: Settings, *, trace_client: Client | None = None
+    ) -> None:
         if not 0 < settings.workflow_timeout <= 3600:
             raise ValueError("WORKFLOW_TIMEOUT_SECONDS 必须大于0且不超过3600。")
         if not 16 <= settings.recursion_limit <= 10000:
             raise ValueError("AGENT_RECURSION_LIMIT 必须为16–10000。")
         self.agent = agent
         self.settings = settings
+        self._owns_trace_client = trace_client is None
         self.trace_client = (
-            Client(api_key=settings.langsmith_api_key, api_url=settings.langsmith_endpoint)
+            trace_client
+            or Client(api_key=settings.langsmith_api_key, api_url=settings.langsmith_endpoint)
             if settings.tracing_configured
             else None
         )
@@ -332,6 +336,7 @@ class ChatService:
             }
 
     async def close(self) -> None:
-        if self.trace_client:
-            await asyncio.to_thread(self.trace_client.flush)
-            await asyncio.to_thread(self.trace_client.close)
+        if self.trace_client and self._owns_trace_client:
+            # close already drains the SDK queue. A network outage must not
+            # leave application shutdown waiting on an unbounded second flush.
+            await asyncio.to_thread(self.trace_client.close, timeout=10)

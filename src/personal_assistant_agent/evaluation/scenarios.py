@@ -153,8 +153,9 @@ class ObservedGraph:
 class ScenarioTarget:
     """One SDK target invocation runs one isolated scenario, including all its turns."""
 
-    def __init__(self, settings, prompt, output, *, timeout=180):
+    def __init__(self, settings, prompt, output, *, timeout=180, trace_client=None):
         self.settings, self.prompt, self.output, self.timeout = settings, prompt, output, timeout
+        self.trace_client = trace_client
         self.repetitions = {}
 
     async def __call__(self, inputs):
@@ -202,7 +203,9 @@ class ScenarioTarget:
                 secrets = [
                     getattr(scoped, field.name) for field in fields(scoped) if not field.repr
                 ]
-                service = ChatService(ObservedGraph(graph, collector), scoped)
+                service = ChatService(
+                    ObservedGraph(graph, collector), scoped, trace_client=self.trace_client
+                )
                 history, todos, conversation = [], case.todos, uuid4()
                 for turn in case.turns:
                     collector.traced_runs.clear()

@@ -62,6 +62,21 @@ def test_missing_assertion_feedback_is_blocking():
     assert result_row(item)["error"] == "missing_evaluator_feedback"
 
 
+def test_trace_failure_stops_paid_judging(monkeypatch):
+    scorer = MagicMock(side_effect=AssertionError("Do not spend tokens after ingestion failure"))
+    monkeypatch.setattr(evaluators, "create_async_llm_as_judge", lambda **kwargs: scorer)
+    monkeypatch.setattr(evaluators, "build_model", lambda *args, **kwargs: MagicMock())
+    item = native_result()
+    quality = evaluators.make_quality_evaluator(
+        Settings(), trace_errors=["LangSmithRateLimitError"]
+    )
+    result = asyncio.run(
+        quality(item["example"].inputs, item["run"].outputs, item["example"].outputs)
+    )
+    assert result[1] == {"key": "judge_error", "value": "TraceDeliveryUnavailable"}
+    scorer.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "response,passed",
     [
@@ -110,6 +125,8 @@ def test_official_openevals_parsing_with_fake_model(monkeypatch, response, passe
         assert reference["length_measurements"] == [
             {"turn": 1, "count": 12, "limit": 25, "mode": "visible"}
         ]
+        assert "as a whole before model or tool execution" in reference["credential_guard"]
+        assert "unnecessary refusal" in reference["credential_guard"]
         assert "response_format" not in payload
         assert payload["temperature"] == 0
         assert payload["tool_choice"]["function"]["name"] == "CorrectnessResult"
